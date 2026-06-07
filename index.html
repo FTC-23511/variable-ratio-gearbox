@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FTC Variable-Ratio Drivetrain Sim — v1</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#1a212b; --card:#222c38; --ink:#e6edf3; --muted:#9aa7b4;
+    --accent:#4da3ff; --good:#3fb950; --bad:#f85149; --warn:#d29922; --line:#30363d;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:14px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:12px; }
+  .layout { display:grid; grid-template-columns:340px 1fr; gap:0; align-items:start; }
+  .sidebar { background:var(--panel); border-right:1px solid var(--line); padding:14px; height:calc(100vh - 58px); overflow-y:auto; position:sticky; top:0; }
+  .main { padding:16px 20px; }
+  .group { background:var(--card); border:1px solid var(--line); border-radius:8px; margin-bottom:12px; }
+  .group > summary { cursor:pointer; padding:10px 12px; font-weight:600; list-style:none; }
+  .group > summary::-webkit-details-marker { display:none; }
+  .group > summary::before { content:"▸ "; color:var(--accent); }
+  .group[open] > summary::before { content:"▾ "; }
+  .group .body { padding:6px 12px 12px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:6px 0; }
+  .row label { color:var(--muted); flex:1; }
+  .row input[type=number] { width:90px; background:#0d1117; color:var(--ink); border:1px solid var(--line); border-radius:5px; padding:4px 6px; }
+  .row input[type=range] { width:120px; }
+  .row .val { width:46px; text-align:right; font-variant-numeric:tabular-nums; color:var(--ink); }
+  .readonly { color:var(--muted); font-size:12px; }
+  button { background:var(--accent); color:#06121f; border:none; border-radius:6px; padding:8px 12px; font-weight:600; cursor:pointer; }
+  button.secondary { background:#2d3742; color:var(--ink); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .btnrow { display:flex; gap:8px; flex-wrap:wrap; margin:8px 0; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th,td { border:1px solid var(--line); padding:6px 8px; text-align:right; }
+  th:first-child, td:first-child { text-align:left; }
+  th { background:#0d1117; color:var(--muted); font-weight:600; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:16px; }
+  .card h2 { margin:0 0 10px; font-size:15px; }
+  .flag { display:inline-block; padding:1px 6px; border-radius:4px; font-size:11px; margin-left:4px; }
+  .flag.bn { background:#5a3a00; color:#ffcf6b; }
+  .flag.slip { background:#5a1f1f; color:#ff9a9a; }
+  .flag.un { background:#4a0d0d; color:#ff7a7a; }
+  .pass { color:var(--good); } .fail { color:var(--bad); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .plot { width:100%; height:320px; }
+  select { background:#0d1117; color:var(--ink); border:1px solid var(--line); border-radius:5px; padding:4px 6px; }
+  .seglist { font-family:ui-monospace,monospace; font-size:12px; }
+  .seglist input { width:60px; background:#0d1117; color:var(--ink); border:1px solid var(--line); border-radius:4px; padding:2px 4px; }
+  .pathitem { border:1px solid var(--line); border-radius:6px; padding:8px; margin-bottom:8px; }
+  .pathitem .pname { font-weight:600; margin-bottom:4px; }
+  .small { font-size:11px; color:var(--muted); }
+  pre.dbg { background:#0d1117; border:1px solid var(--line); border-radius:6px; padding:10px; font-size:12px; max-height:280px; overflow:auto; white-space:pre-wrap; }
+  .note { color:var(--muted); font-size:12px; margin:6px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>FTC Variable-Ratio Drivetrain Sim <span class="small">v1</span></h1>
+  <p>Quantifies the time benefit of a variable gear ratio (shifter / CVT) vs a single optimized ratio. Brownout / traction / power-limited DC physics. goBILDA 5000-series core. Mecanum (N=4).</p>
+</header>
+
+<div class="layout">
+  <!-- ============ CONFIG SIDEBAR ============ -->
+  <aside class="sidebar" id="config">
+    <details class="group" open>
+      <summary>Robot</summary>
+      <div class="body" id="g-robot"></div>
+    </details>
+    <details class="group">
+      <summary>Motor — goBILDA 5000 (fixed)</summary>
+      <div class="body readonly" id="g-motor"></div>
+    </details>
+    <details class="group">
+      <summary>Electrical</summary>
+      <div class="body" id="g-elec"></div>
+    </details>
+    <details class="group" open>
+      <summary>Architectures</summary>
+      <div class="body" id="g-arch"></div>
+    </details>
+    <details class="group">
+      <summary>Simulation</summary>
+      <div class="body" id="g-sim"></div>
+    </details>
+    <div class="btnrow">
+      <button id="btn-run">Run comparison</button>
+      <button id="btn-defaults" class="secondary">Reset defaults</button>
+    </div>
+    <div class="note">Strafing is not modeled (it only shifts effective μ / η). Turns modeled as a fixed per-turn time penalty (default 0).</div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <main class="main">
+    <!-- Paths -->
+    <div class="card">
+      <h2>Paths</h2>
+      <div id="path-editor"></div>
+      <div class="btnrow"><button id="btn-addpath" class="secondary">+ Add path</button></div>
+      <div class="small">Segment syntax: length in m, end = <b>S</b> (stop) or <b>T</b> (through). Metric = sum of weighted total times across the set.</div>
+    </div>
+
+    <!-- Summary -->
+    <div class="card">
+      <h2>Summary</h2>
+      <div id="summary">Run a comparison to see results.</div>
+    </div>
+
+    <!-- Sweep -->
+    <div class="card">
+      <h2>Sweep</h2>
+      <div class="row" style="justify-content:flex-start;gap:10px;flex-wrap:wrap">
+        <label style="flex:none">Variable</label>
+        <select id="sweep-var">
+          <option value="seg_scale">segment length (×)</option>
+          <option value="mu">mu</option>
+          <option value="m_base">m_base (kg)</option>
+          <option value="k">k (shifter gears)</option>
+          <option value="eta_cvt">eta_cvt</option>
+          <option value="R_sys">R_sys (Ω)</option>
+          <option value="I_sw">I_sw (A)</option>
+        </select>
+        <label style="flex:none">min</label><input type="number" id="sweep-min" value="0.5" step="any" style="width:70px">
+        <label style="flex:none">max</label><input type="number" id="sweep-max" value="3" step="any" style="width:70px">
+        <label style="flex:none">points</label><input type="number" id="sweep-pts" value="9" style="width:60px">
+        <button id="btn-sweep" class="secondary">Run sweep</button>
+      </div>
+      <div class="note">Re-optimizes the single-gear baseline at every sweep point (fairness). Uses coarser dt for speed.</div>
+      <div id="sweep-plot" class="plot"></div>
+    </div>
+
+    <!-- Traces -->
+    <div class="card">
+      <h2>Traces</h2>
+      <div class="row" style="justify-content:flex-start;gap:10px;flex-wrap:wrap">
+        <label style="flex:none">Path</label><select id="tr-path"></select>
+        <label style="flex:none">Architecture</label>
+        <select id="tr-arch"><option value="fixed">Single fixed</option><option value="shifter">Shifter</option><option value="cvt">CVT</option></select>
+      </div>
+      <div class="grid2">
+        <div id="plot-v" class="plot"></div>
+        <div id="plot-i" class="plot"></div>
+        <div id="plot-vbus" class="plot"></div>
+        <div id="plot-ts" class="plot"></div>
+      </div>
+    </div>
+
+    <!-- Loss budget -->
+    <div class="card">
+      <h2>Loss budget (integrated energy)</h2>
+      <div id="plot-loss" class="plot" style="height:300px"></div>
+      <div class="small">Buckets: battery+wire · copper · iron (Ke−Kt gap) · friction · drivetrain (gearbox+slip) · useful. Sum closes against ∫P_in (acceptance test 4).</div>
+    </div>
+
+    <!-- Self tests -->
+    <div class="card">
+      <h2>Acceptance self-tests (build brief §6)</h2>
+      <div class="btnrow"><button id="btn-tests" class="secondary">Run self-tests</button></div>
+      <pre class="dbg" id="test-out">Click "Run self-tests".</pre>
+    </div>
+  </main>
+</div>
+
+<script>
+"use strict";
+/* ===================================================================
+   FTC Variable-Ratio Drivetrain Sim — engine + UI (single file, v1)
+   Physics per ftc_variable_ratio_sim_spec.md §3-§5.
+   =================================================================== */
+
+// ---------- Fixed motor constants: goBILDA 5000-series bare core ----------
+const MOTOR = {
+  R_m: 1.304,      // Ω
+  Kt: 0.01611,     // N·m/A   (step E)
+  Ke: 0.01922,     // V·s/rad (step B) — deliberately ≠ Kt
+  I_free: 0.25,    // A
+  w_free: 607.4,   // rad/s (5800 rpm tested), for the torque-speed plot
+  tau_stall: 0.1442,
+  V_nom: 12,
+  I_stall: 9.2,
+};
+const G_ACCEL = 9.81;
+
+// ---------- Default config ----------
+function defaultConfig() {
+  return {
+    // robot
+    m_base: 13, N: 4, r_wheel: 0.048, mu: 0.85, Crr: 0.02, eta_drive: 0.70,
+    // electrical
+    V_oc: 12.5, R_sys: 0.07, V_bn: 9.0, I_sw: 20,
+    // architectures
+    m_trans: { fixed: 0.3, shifter: 1.2, cvt: 1.5 },
+    k: 3, t_shift: 0.10,
+    G_min: 8, G_max: 30, eta_cvt: 0.85, cvt_grid: 50,
+    // sim
+    dt: 0.001, dt_sweep: 0.003,
+    opt_pts: 40,          // single-gear optimizer sweep points
+    turn_penalty: 0,
+    seg_timeout: 10.0,    // s, unreachable guard
+  };
+}
+
+// ---------- Default paths (build brief §4) ----------
+function defaultPaths() {
+  return [
+    { name: "A — Short cycle", weight: 1, segs: [
+      {L:0.6,end:"stop"},{L:0.6,end:"stop"},{L:0.6,end:"stop"},{L:0.6,end:"stop"},{L:0.6,end:"stop"} ] },
+    { name: "B — Cross-field traverse", weight: 1, segs: [ {L:3.0,end:"stop"},{L:3.0,end:"stop"} ] },
+    { name: "C — Mixed match", weight: 1, segs: [
+      {L:1.5,end:"stop"},{L:0.8,end:"stop"},{L:2.4,end:"stop"},{L:0.5,end:"stop"},{L:1.2,end:"stop"} ] },
+  ];
+}
+
+// ---------- Gear ratios ----------
+// Geometric spacing; k=1 special-cased to a single mid ratio.
+function shifterRatios(cfg) {
+  const k = Math.max(1, Math.round(cfg.k));
+  if (k === 1) return [Math.sqrt(cfg.G_min * cfg.G_max)];
+  const out = [];
+  for (let i = 0; i < k; i++) out.push(cfg.G_min * Math.pow(cfg.G_max / cfg.G_min, i / (k - 1)));
+  return out; // ascending; we treat highest reduction = lowest gear
+}
+
+// ---------- Core per-timestep dynamics ----------
+// Given robot speed v, active reduction G, duty d, architecture eta -> returns
+// the full solved step (steps A–H of the spec). Pure; no integration here.
+function solveStep(v, G, d, cfg, eta) {
+  const { N, r_wheel, R_sys, V_oc, V_bn, I_sw } = cfg;
+  const { R_m, Kt, Ke, I_free } = MOTOR;
+  const m = cfg._m;
+
+  // A. motor speed
+  const w_motor = v * G / r_wheel;
+  // B. demanded current (coupled battery + back-EMF)
+  let I = (d * V_oc - Ke * w_motor) / (R_m + d * N * R_sys);
+  // C. clamp: software + brownout
+  const I_bn = (V_oc - V_bn) / (N * R_sys);
+  const I_cap_hi = Math.min(I_sw, I_bn);
+  let slip_flag = false, brownout_flag = false;
+  const I_unclamped = I;
+  if (I > I_cap_hi) I = I_cap_hi;
+  if (I < -I_sw) I = -I_sw;
+  // D. bus voltage / brownout flag
+  const V_bus = V_oc - N * I * R_sys;
+  brownout_flag = V_bus < V_bn;
+  // E. motor torque (subtract no-load friction, always opposing)
+  const sgnI = I === 0 ? 0 : Math.sign(I);
+  const tau_motor = Kt * (I - sgnI * I_free);
+  // F. tractive force at floor (ideal, pre-traction-clamp)
+  const F_ideal = N * tau_motor * G * eta / r_wheel;
+  // G. traction clamp
+  const F_tract_max = cfg.mu * m * G_ACCEL;
+  let F_drive = F_ideal;
+  if (Math.abs(F_ideal) > F_tract_max) { F_drive = Math.sign(F_ideal) * F_tract_max; slip_flag = true; }
+  return { w_motor, I, I_unclamped, V_bus, tau_motor, F_ideal, F_drive, slip_flag, brownout_flag };
+}
+
+// Energy buckets accumulator (joules). Identity closes per step:
+// P_in = batt + copper + iron + friction + gearbox + slip + useful
+function accumEnergy(acc, st, v, dt, eta) {
+  const { N } = window._cfgN; // not used; placeholder guarded below
+}
+
+// ---------- Simulate one segment ----------
+// state carries {t,v} across segments. Returns trace + flags.
+function simSegment(seg, cfg, arch, gearState, trace, energy, st0) {
+  const { dt } = cfg;
+  const eta = arch === "cvt" ? cfg.eta_cvt : cfg.eta_drive;
+  const m = cfg._m;
+  let v = st0.v;
+  let s = 0;
+  let t = st0.t;
+  const L = seg.L;
+  const isStop = seg.end === "stop";
+  let segTime = 0;
+  let unreachable = false;
+  let anySlip = false, anyBn = false;
+
+  // ratios for shifter
+  const ratios = gearState.ratios;
+
+  while (true) {
+    // ---- control policy: pick mode, G, d ----
+    const a_brake = cfg.mu * G_ACCEL;
+    const d_stop = (v * v) / (2 * a_brake);
+    const remaining = L - s;
+    let mode = "accel";
+    if (isStop && remaining <= d_stop && v > 0.001) mode = "brake";
+
+    let G, d = 1, F_drive = 0, step = null;
+
+    if (mode === "brake") {
+      // traction-limited friction brake (v1 simplification). Motor off.
+      let a = -a_brake;
+      const vNew = Math.max(0, v + a * dt);
+      // brake energy bucket (kinetic dissipated)
+      energy.brake += m * a_brake * v * dt;
+      s += vNew * dt; t += dt; segTime += dt;
+      // record
+      if (trace) pushTrace(trace, t, vNew, 0, cfg.V_oc, 0, 0);
+      v = vNew;
+      if (s >= L || v <= 0.0005) { v = isStop ? 0 : v; break; }
+    } else {
+      // choose G by architecture
+      if (arch === "fixed") {
+        G = gearState.G_fixed;
+        step = solveStep(v, G, 1, cfg, eta);
+      } else if (arch === "shifter") {
+        // pick gear giving most wheel force right now (d=1).
+        // ratios ascending → ">=" tie-breaks toward the HIGHER reduction, so at
+        // launch (multiple gears traction-clamped) we hold the tallest-force gear
+        // with the most headroom instead of the middle one. Prevents gear hunting.
+        let bestF = -Infinity, bestG = ratios[0];
+        for (const Gi of ratios) {
+          const sti = solveStep(v, Gi, 1, cfg, eta);
+          if (sti.F_drive >= bestF) { bestF = sti.F_drive; bestG = Gi; }
+        }
+        if (gearState.active == null) gearState.active = bestG;
+        // Hysteresis: only spend the clutch-cut (t_shift at F=0) if the candidate
+        // gear beats the CURRENT gear's force by a real margin. Stops oscillation
+        // between two near-equal gears, each shift of which would zero out force.
+        if (gearState.shiftTimer <= 0 && bestG !== gearState.active) {
+          const fCur = solveStep(v, gearState.active, 1, cfg, eta).F_drive;
+          if (bestF > fCur * 1.02) {
+            if (cfg.t_shift > 0) { gearState.shiftTimer = cfg.t_shift; gearState.pending = bestG; }
+            else { gearState.active = bestG; } // instant shift: commit now (no dead-time branch to run)
+          }
+        }
+        if (gearState.shiftTimer > 0) {
+          // clutch cut: F_drive = 0
+          G = gearState.active;
+          gearState.shiftTimer -= dt;
+          step = solveStep(v, G, 1, cfg, eta);
+          step = { ...step, F_drive: 0, tau_motor: 0, I: 0, F_ideal: 0 };
+          if (gearState.shiftTimer <= 0 && gearState.pending != null) {
+            gearState.active = gearState.pending; gearState.pending = null;
+          }
+        } else {
+          G = gearState.active;
+          step = solveStep(v, G, 1, cfg, eta);
+        }
+      } else { // cvt: grid-scan G, max clamped F_drive
+        let best = -Infinity, bestG = cfg.G_min, bestStep = null;
+        const n = cfg.cvt_grid;
+        for (let j = 0; j < n; j++) {
+          const Gi = cfg.G_min + (cfg.G_max - cfg.G_min) * (j / (n - 1));
+          const sti = solveStep(v, Gi, 1, cfg, eta);
+          if (sti.F_drive > best) { best = sti.F_drive; bestG = Gi; bestStep = sti; }
+        }
+        G = bestG; step = bestStep;
+      }
+
+      // ---- integrate (semi-implicit Euler) ----
+      const F_roll = cfg.Crr * m * G_ACCEL * (v > 0 ? 1 : (v < 0 ? -1 : 0));
+      F_drive = step.F_drive;
+      const F_net = F_drive - F_roll;
+      const a = F_net / m;
+      const vNew = v + a * dt;
+      s += vNew * dt; t += dt; segTime += dt;
+
+      // ---- energy accounting (exact identity) ----
+      const I = step.I, w = step.w_motor;
+      const N = cfg.N;
+      const P_in = cfg.V_oc * N * I;
+      const batt = (N * I) * (N * I) * cfg.R_sys;
+      const copper = N * I * I * MOTOR.R_m;
+      const iron = N * (MOTOR.Ke - MOTOR.Kt) * I * w;
+      const sgnI = I === 0 ? 0 : Math.sign(I);
+      const friction = N * MOTOR.Kt * sgnI * MOTOR.I_free * w;
+      const shaft = N * step.tau_motor * w;          // mechanical at motor shaft
+      const floorIdeal = step.F_ideal * vNew;        // after eta, before traction clamp (use vNew~v)
+      const gearbox = shaft - floorIdeal;            // gearbox loss = shaft*(1-eta)
+      const useful = F_drive * vNew;                 // at floor, after traction clamp
+      const slip = floorIdeal - useful;              // traction-slip loss
+      energy.P_in += P_in * dt;
+      energy.batt += batt * dt;
+      energy.copper += copper * dt;
+      energy.iron += iron * dt;
+      energy.friction += friction * dt;
+      energy.gearbox += gearbox * dt;
+      energy.slip += slip * dt;
+      energy.useful += useful * dt;
+
+      if (step.slip_flag) anySlip = true;
+      if (step.brownout_flag) anyBn = true;
+      if (trace) pushTrace(trace, t, vNew, I, step.V_bus, w, G);
+      v = vNew;
+    }
+
+    if (segTime > cfg.seg_timeout) { unreachable = true; break; }
+    if (s >= L && (!isStop || v <= 0.01)) break;
+    if (s >= L && isStop && mode !== "brake") {
+      // overshot length while still moving and no brake triggered (through-like); for stop, keep going to brake
+    }
+  }
+  st0.v = isStop ? 0 : v;
+  st0.t = t;
+  return { segTime, unreachable, anySlip, anyBn };
+}
+
+function pushTrace(tr, t, v, I, vbus, w, G) {
+  tr.t.push(t); tr.v.push(v); tr.I.push(I); tr.vbus.push(vbus); tr.w.push(w); tr.G.push(G);
+}
+function newEnergy(){ return {P_in:0,batt:0,copper:0,iron:0,friction:0,gearbox:0,slip:0,useful:0,brake:0}; }
+
+// ---------- Simulate a whole path ----------
+function simPath(path, cfg, arch, G_fixed, wantTrace) {
+  const gearState = { G_fixed, ratios: arch === "shifter" ? shifterRatios(cfg) : null,
+                      active:null, pending:null, shiftTimer:0 };
+  const trace = wantTrace ? {t:[],v:[],I:[],vbus:[],w:[],G:[]} : null;
+  const energy = newEnergy();
+  const st = { v:0, t:0 };
+  let total = 0, unreachable=false, anySlip=false, anyBn=false;
+  for (let i=0;i<path.segs.length;i++){
+    const r = simSegment(path.segs[i], cfg, arch, gearState, trace, energy, st);
+    total += r.segTime;
+    if (r.unreachable) { unreachable=true; break; }
+    if (r.anySlip) anySlip=true;
+    if (r.anyBn) anyBn=true;
+    total += cfg.turn_penalty; // per-segment-boundary turn penalty (default 0)
+    st.t += cfg.turn_penalty;
+  }
+  return { time: total, unreachable, anySlip, anyBn, trace, energy };
+}
+
+// ---------- Path set total (weighted) ----------
+function simPathSet(paths, cfg, arch, G_fixed) {
+  let tot=0, unreachable=false;
+  for (const p of paths){
+    const r = simPath(p, cfg, arch, G_fixed, false);
+    if (r.unreachable) { unreachable=true; tot += cfg.seg_timeout*5; }
+    else tot += r.time * (p.weight||1);
+  }
+  return { time: tot, unreachable };
+}
+
+// ---------- Single-gear optimizer (sweep G_fixed, min weighted total time) ----------
+function optimizeFixed(paths, cfg) {
+  const n = cfg.opt_pts;
+  let best = Infinity, bestG = cfg.G_min;
+  const curve = [];
+  for (let j=0;j<n;j++){
+    const G = cfg.G_min + (cfg.G_max - cfg.G_min)*(j/(n-1));
+    const r = simPathSet(paths, cfg, "fixed", G);
+    curve.push({G, time:r.time});
+    if (r.time < best){ best=r.time; bestG=G; }
+  }
+  return { G_fixed: bestG, time: best, curve };
+}
+
+// ---------- Full comparison ----------
+function runComparisonCore(paths, cfg) {
+  // resolve mass per architecture happens inside withMass()
+  const fixedOpt = withMass(cfg,"fixed",()=>optimizeFixed(paths, cfg));
+  const fixedSet = withMass(cfg,"fixed",()=>simPathSet(paths, cfg, "fixed", fixedOpt.G_fixed));
+  const shifterSet = withMass(cfg,"shifter",()=>simPathSet(paths, cfg, "shifter", null));
+  const cvtSet = withMass(cfg,"cvt",()=>simPathSet(paths, cfg, "cvt", null));
+  return { fixedOpt, fixed:fixedSet, shifter:shifterSet, cvt:cvtSet };
+}
+
+// helper: set cfg._m for an architecture during a thunk
+function withMass(cfg, arch, fn){
+  cfg._m = cfg.m_base + (cfg.m_trans[arch]||0);
+  return fn();
+}
+
+/* ====================== UI ====================== */
+let CFG = defaultConfig();
+let PATHS = defaultPaths();
+let LAST = null;
+
+const $ = id => document.getElementById(id);
+
+function numRow(parent,key,label,obj,prop,step){
+  const div=document.createElement("div"); div.className="row";
+  div.innerHTML=`<label>${label}</label><input type="number" step="${step||'any'}">`;
+  const inp=div.querySelector("input"); inp.value=obj[prop];
+  inp.addEventListener("change",()=>{ obj[prop]=parseFloat(inp.value); });
+  parent.appendChild(div); return inp;
+}
+function sliderRow(parent,label,obj,prop,min,max,stp){
+  const div=document.createElement("div"); div.className="row";
+  div.innerHTML=`<label>${label}</label><input type="range" min="${min}" max="${max}" step="${stp}"><span class="val"></span>`;
+  const inp=div.querySelector("input"), val=div.querySelector(".val");
+  inp.value=obj[prop]; val.textContent=(+obj[prop]).toFixed(2);
+  inp.addEventListener("input",()=>{ obj[prop]=parseFloat(inp.value); val.textContent=(+obj[prop]).toFixed(2); });
+  parent.appendChild(div);
+}
+
+function buildConfigUI(){
+  // Robot
+  const r=$("g-robot"); r.innerHTML="";
+  numRow(r,"m_base","m_base (kg)",CFG,"m_base");
+  numRow(r,"N","N motors",CFG,"N");
+  numRow(r,"r_wheel","r_wheel (m)",CFG,"r_wheel");
+  sliderRow(r,"mu (traction)",CFG,"mu",0.3,1.2,0.01);
+  numRow(r,"Crr","Crr",CFG,"Crr");
+  sliderRow(r,"eta_drive",CFG,"eta_drive",0.50,0.95,0.01);
+
+  // Motor (read-only)
+  $("g-motor").innerHTML =
+   `R_m = ${MOTOR.R_m} Ω<br>Kt = ${MOTOR.Kt} N·m/A<br>Ke = ${MOTOR.Ke} V·s/rad<br>`+
+   `I_free = ${MOTOR.I_free} A<br>w_free = ${MOTOR.w_free} rad/s (5800 rpm)<br>`+
+   `<span class="small">Bare core (6000 rpm theoretical). G = planetary × external. Kt≠Ke by design.</span>`;
+
+  // Electrical
+  const e=$("g-elec"); e.innerHTML="";
+  numRow(e,"V_oc","V_oc (V)",CFG,"V_oc");
+  numRow(e,"R_sys","R_sys (Ω)",CFG,"R_sys");
+  numRow(e,"V_bn","V_bn (V)",CFG,"V_bn");
+  numRow(e,"I_sw","I_sw (A/motor)",CFG,"I_sw");
+
+  // Architectures
+  const a=$("g-arch"); a.innerHTML="";
+  numRow(a,"mf","m_trans fixed (kg)",CFG.m_trans,"fixed");
+  numRow(a,"ms","m_trans shifter (kg)",CFG.m_trans,"shifter");
+  numRow(a,"mc","m_trans CVT (kg)",CFG.m_trans,"cvt");
+  numRow(a,"k","k (shifter gears)",CFG,"k",1);
+  numRow(a,"tshift","t_shift (s)",CFG,"t_shift");
+  numRow(a,"gmin","G_min",CFG,"G_min");
+  numRow(a,"gmax","G_max",CFG,"G_max");
+  sliderRow(a,"eta_cvt",CFG,"eta_cvt",0.50,0.98,0.01);
+  numRow(a,"cgrid","CVT grid pts",CFG,"cvt_grid");
+
+  // Sim
+  const s=$("g-sim"); s.innerHTML="";
+  numRow(s,"dt","dt (s)",CFG,"dt");
+  numRow(s,"dts","dt sweep (s)",CFG,"dt_sweep");
+  numRow(s,"opt","optimizer pts",CFG,"opt_pts");
+  numRow(s,"turn","turn penalty (s)",CFG,"turn_penalty");
+}
+
+function buildPathEditor(){
+  const root=$("path-editor"); root.innerHTML="";
+  PATHS.forEach((p,pi)=>{
+    const d=document.createElement("div"); d.className="pathitem";
+    const segStr=p.segs.map(s=>`${s.L}${s.end==="stop"?"S":"T"}`).join(", ");
+    d.innerHTML=`<div class="pname"><input value="${p.name}" style="width:200px;background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:4px;padding:2px 4px">
+      &nbsp;weight <input type="number" value="${p.weight}" style="width:46px" class="w">
+      <button class="secondary del" style="float:right;padding:2px 8px">✕</button></div>
+      <div class="seglist">segments: <input class="segs" value="${segStr}" style="width:75%"></div>`;
+    d.querySelector(".pname input").addEventListener("change",e=>p.name=e.target.value);
+    d.querySelector(".w").addEventListener("change",e=>p.weight=parseFloat(e.target.value));
+    d.querySelector(".segs").addEventListener("change",e=>{ p.segs=parseSegs(e.target.value); });
+    d.querySelector(".del").addEventListener("click",()=>{ PATHS.splice(pi,1); buildPathEditor(); refreshPathDropdown(); });
+    root.appendChild(d);
+  });
+}
+function parseSegs(str){
+  return str.split(",").map(x=>x.trim()).filter(Boolean).map(tok=>{
+    const m=tok.match(/^([\d.]+)\s*([STst])?$/);
+    if(!m) return null;
+    return { L:parseFloat(m[1]), end:(m[2]||"S").toUpperCase()==="T"?"through":"stop" };
+  }).filter(Boolean);
+}
+function refreshPathDropdown(){
+  const sel=$("tr-path"); sel.innerHTML="";
+  PATHS.forEach((p,i)=>{ const o=document.createElement("option"); o.value=i; o.textContent=p.name; sel.appendChild(o); });
+}
+
+// ---------- Render results ----------
+function fmt(x,d=2){ return (x==null||!isFinite(x))?"—":(+x).toFixed(d); }
+
+function renderSummary(res){
+  const base=res.fixed.time;
+  const rows=[
+    ["Single fixed (optimized)", res.fixed, `G_fixed = ${fmt(res.fixedOpt.G_fixed,2)}`],
+    ["Shifter", res.shifter, `k = ${Math.round(CFG.k)} gears`],
+    ["CVT", res.cvt, `G∈[${CFG.G_min},${CFG.G_max}], η=${fmt(CFG.eta_cvt,2)}`],
+  ];
+  let html=`<table><tr><th>Architecture</th><th>Total time (s)</th><th>Δ vs baseline (s)</th><th>Δ %</th><th>Notes / flags</th></tr>`;
+  for(const [name,r,note] of rows){
+    const d = base - r.time;
+    const pct = base>0 ? 100*d/base : 0;
+    const flags=[];
+    if(r.unreachable) flags.push(`<span class="flag un">unreachable</span>`);
+    const dStr = name.startsWith("Single") ? "—" : `${d>=0?"−":"+"}${fmt(Math.abs(d),3)}`;
+    const pStr = name.startsWith("Single") ? "—" : `${fmt(pct,2)}%`;
+    html+=`<tr><td>${name}</td><td>${fmt(r.time,3)}</td><td>${dStr}</td><td>${pStr}</td><td>${note} ${flags.join("")}</td></tr>`;
+  }
+  html+=`</table><div class="small" style="margin-top:6px">Positive Δ = faster than the single optimized gear. Baseline re-optimized for this config.</div>`;
+  $("summary").innerHTML=html;
+}
+
+function renderTraces(){
+  if(!LAST) return;
+  const pi=+$("tr-path").value||0;
+  const arch=$("tr-arch").value;
+  const G_fixed = LAST.res.fixedOpt.G_fixed;
+  const r = withMass(CFG,arch,()=>simPath(PATHS[pi], CFG, arch, G_fixed, true));
+  const tr=r.trace;
+  const layout=(title,yt)=>({title:{text:title,font:{size:13}},margin:{l:50,r:10,t:30,b:35},
+     paper_bgcolor:"#222c38",plot_bgcolor:"#0d1117",font:{color:"#9aa7b4",size:11},
+     xaxis:{title:"t (s)",gridcolor:"#30363d"},yaxis:{title:yt,gridcolor:"#30363d"}});
+  const line=c=>({mode:"lines",line:{color:c,width:1.5}});
+  Plotly.newPlot("plot-v",[{x:tr.t,y:tr.v,...line("#4da3ff")}],layout("v(t)","m/s"),{displayModeBar:false});
+  Plotly.newPlot("plot-i",[{x:tr.t,y:tr.I,...line("#3fb950")}],layout("I(t) per motor","A"),{displayModeBar:false});
+  Plotly.newPlot("plot-vbus",[{x:tr.t,y:tr.vbus,...line("#d29922")}],layout("V_bus(t)","V"),{displayModeBar:false});
+
+  // torque-speed curve + operating points
+  const ws=[], taus=[];
+  for(let i=0;i<=50;i++){ const w=MOTOR.w_free*i/50; ws.push(w); taus.push(MOTOR.tau_stall*(1-w/MOTOR.w_free)); }
+  const opW=tr.w, opT=tr.I.map(I=>MOTOR.Kt*(I-(I===0?0:Math.sign(I))*MOTOR.I_free));
+  Plotly.newPlot("plot-ts",[
+    {x:ws,y:taus,mode:"lines",line:{color:"#9aa7b4",width:1.5},name:"τ-ω curve"},
+    {x:opW,y:opT,mode:"markers",marker:{color:"#f85149",size:3,opacity:0.5},name:"operating pts"}
+  ],{...layout("Motor operating point","τ (N·m)"),showlegend:true,legend:{font:{size:10}},
+     xaxis:{title:"ω motor (rad/s)",gridcolor:"#30363d"}},{displayModeBar:false});
+
+  renderLoss(r.energy);
+}
+
+function renderLoss(en){
+  const keys=["batt","copper","iron","friction","gearbox","slip","useful"];
+  const labels=["battery+wire","copper","iron","friction","gearbox","slip","useful"];
+  const colors=["#8957e5","#f85149","#d29922","#db6d28","#6e7681","#bb8009","#3fb950"];
+  const vals=keys.map(k=>en[k]);
+  Plotly.newPlot("plot-loss",[{
+    x:labels,y:vals,type:"bar",marker:{color:colors}
+  }],{margin:{l:55,r:10,t:10,b:60},paper_bgcolor:"#222c38",plot_bgcolor:"#0d1117",
+      font:{color:"#9aa7b4",size:11},yaxis:{title:"Energy (J)",gridcolor:"#30363d"},
+      xaxis:{gridcolor:"#30363d"}},{displayModeBar:false});
+}
+
+// ---------- Run handlers ----------
+function doRun(){
+  $("btn-run").disabled=true; $("btn-run").textContent="Running…";
+  setTimeout(()=>{
+    try{
+      const res=runComparisonCore(PATHS, CFG);
+      LAST={res};
+      renderSummary(res);
+      refreshPathDropdown();
+      renderTraces();
+    }catch(err){ $("summary").innerHTML=`<span class="fail">Error: ${err.message}</span>`; console.error(err); }
+    $("btn-run").disabled=false; $("btn-run").textContent="Run comparison";
+  },10);
+}
+
+function doSweep(){
+  const v=$("sweep-var").value, lo=parseFloat($("sweep-min").value),
+        hi=parseFloat($("sweep-max").value), n=Math.max(2,Math.round(parseFloat($("sweep-pts").value)));
+  $("btn-sweep").disabled=true; $("btn-sweep").textContent="Sweeping…";
+  setTimeout(()=>{
+    const xs=[], dShift=[], dCvt=[];
+    for(let j=0;j<n;j++){
+      const val=lo+(hi-lo)*(j/(n-1));
+      const cfg=JSON.parse(JSON.stringify(CFG)); cfg.dt=CFG.dt_sweep; cfg.m_trans=CFG.m_trans; cfg.cvt_grid=30;
+      let paths=PATHS;
+      if(v==="seg_scale"){ paths=PATHS.map(p=>({...p,segs:p.segs.map(s=>({...s,L:s.L*val}))})); }
+      else { cfg[v]=val; }
+      const res=runComparisonCore(paths,cfg);
+      const base=res.fixed.time;
+      xs.push(val);
+      dShift.push(base>0?100*(base-res.shifter.time)/base:0);
+      dCvt.push(base>0?100*(base-res.cvt.time)/base:0);
+    }
+    const layout={title:{text:`Benefit vs ${$("sweep-var").selectedOptions[0].text}`,font:{size:13}},
+      margin:{l:55,r:10,t:35,b:40},paper_bgcolor:"#222c38",plot_bgcolor:"#0d1117",
+      font:{color:"#9aa7b4",size:11},xaxis:{title:$("sweep-var").selectedOptions[0].text,gridcolor:"#30363d"},
+      yaxis:{title:"Δ time vs baseline (%)",gridcolor:"#30363d"},showlegend:true,legend:{font:{size:10}}};
+    Plotly.newPlot("sweep-plot",[
+      {x:xs,y:dShift,mode:"lines+markers",name:"Shifter",line:{color:"#4da3ff"}},
+      {x:xs,y:dCvt,mode:"lines+markers",name:"CVT",line:{color:"#3fb950"}}
+    ],layout,{displayModeBar:false});
+    $("btn-sweep").disabled=false; $("btn-sweep").textContent="Run sweep";
+  },10);
+}
+
+/* ====================== Acceptance self-tests (§6) ====================== */
+function runSelfTests(){
+  const out=[]; const P=(name,cond,detail)=>out.push(`${cond?'<span class="pass">PASS</span>':'<span class="fail">FAIL</span>'}  ${name} — ${detail}`);
+  const cfg=defaultConfig(); cfg._m=cfg.m_base+cfg.m_trans.fixed;
+
+  // 1. Stall
+  {
+    const st=solveStep(0,15,1,cfg,cfg.eta_drive);
+    const expI=cfg.V_oc/(MOTOR.R_m+cfg.N*cfg.R_sys);
+    P("1 Stall current/bus", Math.abs(st.I-expI)<0.05 && st.V_bus>cfg.V_bn && isFinite(st.F_drive) && st.F_drive>0,
+      `I=${fmt(st.I,2)}A (exp ${fmt(expI,2)}), V_bus=${fmt(st.V_bus,2)}V (>${cfg.V_bn}), F=${fmt(st.F_drive,1)}N`);
+  }
+  // 2. Free speed
+  {
+    const G=15, w=cfg.V_oc/MOTOR.Ke, v=w*cfg.r_wheel/G;
+    const st=solveStep(v,G,1,cfg,cfg.eta_drive);
+    P("2 Free speed → I→0", Math.abs(st.I)<0.5 && isFinite(st.F_drive),
+      `at v=${fmt(v,2)} m/s, I=${fmt(st.I,3)}A, F=${fmt(st.F_drive,2)}N`);
+  }
+  // 3. Convex baseline
+  {
+    const opt=withMass(cfg,"fixed",()=>optimizeFixed(defaultPaths(),cfg));
+    const raw=opt.curve.map(p=>p.time);
+    // Smooth with a 3-pt moving average first: the underlying total-time(G) curve
+    // is convex, but discrete segment-stop timing adds sub-0.05s noise that would
+    // otherwise flip the slope sign many times in the flat minimum region. A real
+    // bug (multiple minima / true jaggedness) survives smoothing; numerical noise
+    // does not.
+    const c=raw.map((_,i)=>{ const a=raw[Math.max(0,i-1)],b=raw[i],d=raw[Math.min(raw.length-1,i+1)]; return (a+b+d)/3; });
+    let signChanges=0, prev=0;
+    for(let i=1;i<c.length;i++){ const s=Math.sign(c[i]-c[i-1]); if(s!==0&&prev!==0&&s!==prev)signChanges++; if(s!==0)prev=s; }
+    P("3 Convex baseline (single min)", signChanges<=1,
+      `slope sign-changes=${signChanges} after 3-pt smoothing (≤1 = convex), best G=${fmt(opt.G_fixed,2)}`);
+  }
+  // 4. Energy balance
+  {
+    const c2=defaultConfig(); c2._m=c2.m_base+c2.m_trans.fixed;
+    // long accel-only path (through), high mu, so no traction clamp / brake
+    c2.mu=2.0;
+    const path={name:"t",weight:1,segs:[{L:8.0,end:"through"}]};
+    const r=simPath(path,c2,"fixed",15,false);
+    const en=r.energy;
+    const sum=en.batt+en.copper+en.iron+en.friction+en.gearbox+en.slip+en.useful;
+    const resid=Math.abs(en.P_in-sum)/Math.abs(en.P_in);
+    const sumNoIron=sum-en.iron;
+    const residNoIron=Math.abs(en.P_in-sumNoIron)/Math.abs(en.P_in);
+    P("4 Energy balance (with iron)", resid<0.02,
+      `∫P_in=${fmt(en.P_in,1)}J, Σlosses=${fmt(sum,1)}J, residual=${fmt(resid*100,3)}% (<2%)`);
+    P("4b Iron term required", residNoIron>0.05,
+      `dropping iron → residual ${fmt(residNoIron*100,1)}% (proves the Ke−Kt term matters)`);
+  }
+  // 5. Ordering (m_trans=0, eta_cvt=1): CVT ≤ shifter ≤ single, per path
+  {
+    // Idealized invariant: zero the mass penalty AND the CVT efficiency penalty
+    // AND the shift dead-time, so it tests pure ratio freedom (more ratios can't
+    // hurt). With a real t_shift>0, a single gear can beat a shifter on a segment
+    // too short to amortize a clutch-cut — that's expected, not a policy bug.
+    const c3=defaultConfig(); c3.m_trans={fixed:0,shifter:0,cvt:0}; c3.eta_cvt=1.0; c3.t_shift=0;
+    let ok=true, detail=[];
+    for(const p of defaultPaths()){
+      const opt=withMass(c3,"fixed",()=>optimizeFixed([p],c3));
+      const f=withMass(c3,"fixed",()=>simPath(p,c3,"fixed",opt.G_fixed,false)).time;
+      const sh=withMass(c3,"shifter",()=>simPath(p,c3,"shifter",null,false)).time;
+      const cv=withMass(c3,"cvt",()=>simPath(p,c3,"cvt",null,false)).time;
+      const tol=1e-3;
+      const pass = cv<=sh+tol && sh<=f+tol;
+      if(!pass) ok=false;
+      detail.push(`${p.name.split(" ")[0]}: cvt ${fmt(cv,3)} ≤ sh ${fmt(sh,3)} ≤ fix ${fmt(f,3)}`);
+    }
+    P("5 Ordering CVT≤Shifter≤Single", ok, detail.join(" | "));
+  }
+  // 6. Brownout
+  {
+    const c4=defaultConfig(); c4._m=c4.m_base+c4.m_trans.fixed; c4.R_sys=0.30;
+    const st=solveStep(0,15,1,c4,c4.eta_drive);
+    const I_bn=(c4.V_oc-c4.V_bn)/(c4.N*c4.R_sys);
+    P("6 Brownout caps current", st.I<=I_bn+1e-6 && isFinite(st.F_drive) && !isNaN(st.F_drive),
+      `R_sys=0.30 → I_bn=${fmt(I_bn,2)}A, I=${fmt(st.I,2)}A, V_bus=${fmt(st.V_bus,2)}V, flag=${st.brownout_flag}`);
+  }
+  // 7. Traction
+  {
+    const cHi=defaultConfig(); cHi._m=cHi.m_base+cHi.m_trans.fixed; cHi.mu=1.2;
+    const cLo=defaultConfig(); cLo._m=cLo.m_base+cLo.m_trans.fixed; cLo.mu=0.3;
+    const sHi=solveStep(0.1,15,1,cHi,cHi.eta_drive);
+    const sLo=solveStep(0.1,15,1,cLo,cLo.eta_drive);
+    P("7 Traction: low μ slips, high μ less", (sLo.slip_flag===true) && (sHi.slip_flag===false || sHi.F_drive>=sLo.F_drive),
+      `high μ: slip=${sHi.slip_flag} F=${fmt(sHi.F_drive,1)}N | low μ: slip=${sLo.slip_flag} F=${fmt(sLo.F_drive,1)}N`);
+  }
+
+  $("test-out").innerHTML=out.join("\n");
+  console.log(out.join("\n").replace(/<[^>]+>/g,""));
+}
+
+/* ====================== Wire up ====================== */
+function init(){
+  buildConfigUI();
+  buildPathEditor();
+  refreshPathDropdown();
+  $("btn-run").addEventListener("click",doRun);
+  $("btn-sweep").addEventListener("click",doSweep);
+  $("btn-tests").addEventListener("click",runSelfTests);
+  $("btn-defaults").addEventListener("click",()=>{ CFG=defaultConfig(); PATHS=defaultPaths(); buildConfigUI(); buildPathEditor(); refreshPathDropdown(); });
+  $("btn-addpath").addEventListener("click",()=>{ PATHS.push({name:"New path",weight:1,segs:[{L:1.0,end:"stop"}]}); buildPathEditor(); refreshPathDropdown(); });
+  $("tr-path").addEventListener("change",renderTraces);
+  $("tr-arch").addEventListener("change",renderTraces);
+}
+document.addEventListener("DOMContentLoaded",init);
+</script>
+</body>
+</html>

@@ -11,3 +11,7 @@ desktop.ini
 
 # Claude Code local permission grants (machine-specific)
 .claude/settings.local.json
+
+# Local preview helpers (not part of the standalone app)
+.claude/serve.js
+.claude/launch.json
