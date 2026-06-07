@@ -55,6 +55,14 @@
   .small { font-size:11px; color:var(--muted); }
   pre.dbg { background:#0d1117; border:1px solid var(--line); border-radius:6px; padding:10px; font-size:12px; max-height:280px; overflow:auto; white-space:pre-wrap; }
   .note { color:var(--muted); font-size:12px; margin:6px 0; }
+  /* info icon + tooltip */
+  .info { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px;
+    margin-left:5px; border-radius:50%; border:1px solid var(--accent); color:var(--accent);
+    font:italic 700 10px/1 Georgia,serif; cursor:help; vertical-align:middle; user-select:none; flex:none; }
+  .info:hover, .info:focus { background:var(--accent); color:#06121f; outline:none; }
+  #tip { position:fixed; z-index:1000; max-width:280px; background:#0d1117; color:var(--ink);
+    border:1px solid var(--accent); border-radius:6px; padding:8px 10px; font-size:12px; line-height:1.4;
+    box-shadow:0 6px 20px rgba(0,0,0,.5); display:none; pointer-events:none; }
 </style>
 </head>
 <body>
@@ -319,14 +327,26 @@ function simSegment(seg, cfg, arch, gearState, trace, energy, st0) {
           if (sti.F_drive >= bestF) { bestF = sti.F_drive; bestG = Gi; }
         }
         if (gearState.active == null) gearState.active = bestG;
-        // Hysteresis: only spend the clutch-cut (t_shift at F=0) if the candidate
-        // gear beats the CURRENT gear's force by a real margin. Stops oscillation
-        // between two near-equal gears, each shift of which would zero out force.
-        if (gearState.shiftTimer <= 0 && bestG !== gearState.active) {
+        if (gearState.dwellTimer > 0) gearState.dwellTimer -= dt;
+        // Two guards against gear HUNTING (critical when ratios are widely spaced,
+        // e.g. k=2 → [G_min,G_max]):
+        //  (1) Hysteresis — only shift if the candidate beats the CURRENT gear's
+        //      force by a margin, so near-ties don't trigger.
+        //  (2) Minimum dwell — after a shift, ride the new gear for a short window
+        //      before reconsidering. Without this, the t_shift clutch-cut itself
+        //      bleeds speed back across the crossover, flipping the preference and
+        //      causing a perpetual ping-pong that never lets the robot accelerate.
+        //      With t_shift=0 (idealized) there's no cut to perturb v, so no dwell.
+        const dwellFloor = cfg.t_shift > 0 ? Math.max(0.15, 2 * cfg.t_shift) : 0;
+        if (gearState.shiftTimer <= 0 && gearState.dwellTimer <= 0 && bestG !== gearState.active) {
           const fCur = solveStep(v, gearState.active, 1, cfg, eta).F_drive;
           if (bestF > fCur * 1.02) {
-            if (cfg.t_shift > 0) { gearState.shiftTimer = cfg.t_shift; gearState.pending = bestG; }
-            else { gearState.active = bestG; } // instant shift: commit now (no dead-time branch to run)
+            if (cfg.t_shift > 0) {
+              gearState.shiftTimer = cfg.t_shift; gearState.pending = bestG;
+              gearState.dwellTimer = cfg.t_shift + dwellFloor;
+            } else {
+              gearState.active = bestG; // instant shift: commit now (no dead-time branch)
+            }
           }
         }
         if (gearState.shiftTimer > 0) {
@@ -409,7 +429,7 @@ function newEnergy(){ return {P_in:0,batt:0,copper:0,iron:0,friction:0,gearbox:0
 // ---------- Simulate a whole path ----------
 function simPath(path, cfg, arch, G_fixed, wantTrace) {
   const gearState = { G_fixed, ratios: arch === "shifter" ? shifterRatios(cfg) : null,
-                      active:null, pending:null, shiftTimer:0 };
+                      active:null, pending:null, shiftTimer:0, dwellTimer:0 };
   const trace = wantTrace ? {t:[],v:[],I:[],vbus:[],w:[],G:[]} : null;
   const energy = newEnergy();
   const st = { v:0, t:0 };
@@ -474,16 +494,44 @@ let LAST = null;
 
 const $ = id => document.getElementById(id);
 
-function numRow(parent,key,label,obj,prop,step){
+// ----- info-icon tooltips -----
+function escAttr(s){ return String(s).replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function infoIcon(tip){ return tip ? `<span class="info" tabindex="0" data-tip="${escAttr(tip)}">i</span>` : ""; }
+function initTooltips(){
+  let tipEl=$("tip");
+  if(!tipEl){ tipEl=document.createElement("div"); tipEl.id="tip"; document.body.appendChild(tipEl); }
+  let pinned=null;
+  const show=(icon)=>{
+    tipEl.textContent=icon.getAttribute("data-tip");
+    tipEl.style.display="block";
+    const r=icon.getBoundingClientRect(), tw=tipEl.offsetWidth, th=tipEl.offsetHeight;
+    let x=r.left, y=r.bottom+6;
+    if(x+tw>innerWidth-8) x=innerWidth-8-tw;
+    if(x<8) x=8;
+    if(y+th>innerHeight-8) y=r.top-6-th; // flip above if no room below
+    tipEl.style.left=x+"px"; tipEl.style.top=Math.max(8,y)+"px";
+  };
+  const hide=()=>{ if(!pinned){ tipEl.style.display="none"; } };
+  document.addEventListener("mouseover",e=>{ const i=e.target.closest(".info"); if(i){ pinned=null; show(i);} });
+  document.addEventListener("mouseout",e=>{ const i=e.target.closest(".info"); if(i && !pinned) hide(); });
+  // click pins (touch / keyboard friendly); click elsewhere unpins
+  document.addEventListener("click",e=>{ const i=e.target.closest(".info");
+    if(i){ if(pinned===i){ pinned=null; tipEl.style.display="none"; } else { pinned=i; show(i); } e.stopPropagation(); }
+    else if(pinned){ pinned=null; tipEl.style.display="none"; } });
+  document.addEventListener("focusin",e=>{ const i=e.target.closest&&e.target.closest(".info"); if(i){ pinned=i; show(i);} });
+  document.addEventListener("keydown",e=>{ if(e.key==="Escape"){ pinned=null; tipEl.style.display="none"; } });
+}
+
+function numRow(parent,key,label,obj,prop,step,tip){
   const div=document.createElement("div"); div.className="row";
-  div.innerHTML=`<label>${label}</label><input type="number" step="${step||'any'}">`;
+  div.innerHTML=`<label>${label}${infoIcon(tip)}</label><input type="number" step="${step||'any'}">`;
   const inp=div.querySelector("input"); inp.value=obj[prop];
   inp.addEventListener("change",()=>{ obj[prop]=parseFloat(inp.value); });
   parent.appendChild(div); return inp;
 }
-function sliderRow(parent,label,obj,prop,min,max,stp){
+function sliderRow(parent,label,obj,prop,min,max,stp,tip){
   const div=document.createElement("div"); div.className="row";
-  div.innerHTML=`<label>${label}</label><input type="range" min="${min}" max="${max}" step="${stp}"><span class="val"></span>`;
+  div.innerHTML=`<label>${label}${infoIcon(tip)}</label><input type="range" min="${min}" max="${max}" step="${stp}"><span class="val"></span>`;
   const inp=div.querySelector("input"), val=div.querySelector(".val");
   inp.value=obj[prop]; val.textContent=(+obj[prop]).toFixed(2);
   inp.addEventListener("input",()=>{ obj[prop]=parseFloat(inp.value); val.textContent=(+obj[prop]).toFixed(2); });
@@ -493,12 +541,12 @@ function sliderRow(parent,label,obj,prop,min,max,stp){
 function buildConfigUI(){
   // Robot
   const r=$("g-robot"); r.innerHTML="";
-  numRow(r,"m_base","m_base (kg)",CFG,"m_base");
-  numRow(r,"N","N motors",CFG,"N");
-  numRow(r,"r_wheel","r_wheel (m)",CFG,"r_wheel");
-  sliderRow(r,"mu (traction)",CFG,"mu",0.3,1.2,0.01);
-  numRow(r,"Crr","Crr",CFG,"Crr");
-  sliderRow(r,"eta_drive",CFG,"eta_drive",0.50,0.95,0.01);
+  numRow(r,"m_base","m_base (kg)",CFG,"m_base",null,"Robot mass WITHOUT the transmission (kg). Total mass m = m_base + m_trans for the chosen architecture. Heavier robot → slower acceleration, but a higher traction-force ceiling (μ·m·g).");
+  numRow(r,"N","N motors",CFG,"N",null,"Number of drive motors. Mecanum drivetrains use 4. Total tractive force and battery current both scale with N.");
+  numRow(r,"r_wheel","r_wheel (m)",CFG,"r_wheel",null,"Drive-wheel radius (m). Couples motor speed to robot speed: ω_motor = v·G / r_wheel. A smaller wheel gives more force but a lower top speed for the same gear ratio.");
+  sliderRow(r,"mu (traction)",CFG,"mu",0.3,1.2,0.01,"Effective traction coefficient (grip). Caps tractive force at μ·m·g and sets the braking deceleration (μ·g). Modern 20–30A urethane wheels ≈ 0.8–1.0; worn or dusty ≈ 0.4–0.6.");
+  numRow(r,"Crr","Crr",CFG,"Crr",null,"Rolling-resistance coefficient. A small drag force opposing motion, F = Crr·m·g. Typical FTC values 0.01–0.03.");
+  sliderRow(r,"eta_drive",CFG,"eta_drive",0.50,0.95,0.01,"Mechanical efficiency (0–1) of the FIXED and SHIFTER gearbox + bearings — the fraction of motor torque that reaches the floor. The CVT uses its own eta_cvt instead. Default 0.70.");
 
   // Motor (read-only)
   $("g-motor").innerHTML =
@@ -508,29 +556,30 @@ function buildConfigUI(){
 
   // Electrical
   const e=$("g-elec"); e.innerHTML="";
-  numRow(e,"V_oc","V_oc (V)",CFG,"V_oc");
-  numRow(e,"R_sys","R_sys (Ω)",CFG,"R_sys");
-  numRow(e,"V_bn","V_bn (V)",CFG,"V_bn");
-  numRow(e,"I_sw","I_sw (A/motor)",CFG,"I_sw");
+  numRow(e,"V_oc","V_oc (V)",CFG,"V_oc",null,"Battery open-circuit (no-load) voltage. ≈12.5 V fresh. The source voltage before the system-resistance drop under load.");
+  numRow(e,"R_sys","R_sys (Ω)",CFG,"R_sys",null,"Combined battery + wiring resistance (Ω), shared before current splits to the motors. Sets the brownout ceiling: higher R_sys → more bus-voltage sag under load. Typical 0.05–0.10 Ω.");
+  numRow(e,"V_bn","V_bn (V)",CFG,"V_bn",null,"Brownout threshold (V). If the bus sags below this, the control electronics brown out. Current is capped so V_bus stays ≥ V_bn. ≈9 V.");
+  numRow(e,"I_sw","I_sw (A/motor)",CFG,"I_sw",null,"Per-motor software current limit (A). Caps each motor's current to protect the motor and controller, independent of the brownout cap.");
 
   // Architectures
   const a=$("g-arch"); a.innerHTML="";
-  numRow(a,"mf","m_trans fixed (kg)",CFG.m_trans,"fixed");
-  numRow(a,"ms","m_trans shifter (kg)",CFG.m_trans,"shifter");
-  numRow(a,"mc","m_trans CVT (kg)",CFG.m_trans,"cvt");
-  numRow(a,"k","k (shifter gears)",CFG,"k",1);
-  numRow(a,"tshift","t_shift (s)",CFG,"t_shift");
-  numRow(a,"gmin","G_min",CFG,"G_min");
-  numRow(a,"gmax","G_max",CFG,"G_max");
-  sliderRow(a,"eta_cvt",CFG,"eta_cvt",0.50,0.98,0.01);
-  numRow(a,"cgrid","CVT grid pts",CFG,"cvt_grid");
+  const mtransTip=" transmission mass penalty (kg), added to m_base for a fair fight. A simple fixed gearbox is lightest; a shifter is heavier; a CVT heaviest.";
+  numRow(a,"mf","m_trans fixed (kg)",CFG.m_trans,"fixed",null,"Fixed-gear"+mtransTip);
+  numRow(a,"ms","m_trans shifter (kg)",CFG.m_trans,"shifter",null,"Shifter"+mtransTip);
+  numRow(a,"mc","m_trans CVT (kg)",CFG.m_trans,"cvt",null,"CVT"+mtransTip);
+  numRow(a,"k","k (shifter gears)",CFG,"k",1,"Number of shifter gears. Ratios are spaced GEOMETRICALLY between G_min and G_max (equal speed-ratio steps). k=1 = a single mid ratio. More gears = finer ratio choice, but every shift costs t_shift of zero drive force.");
+  numRow(a,"tshift","t_shift (s)",CFG,"t_shift",null,"Clutch dead-time per gear change (s). Drive force = 0 while shifting. Larger values punish frequent shifting — on short fields this can make a multi-gear shifter LOSE to a single well-chosen gear.");
+  numRow(a,"gmin","G_min",CFG,"G_min",null,"Tallest (numerically smallest) total reduction = highest top speed, least launch torque. G = goBILDA planetary ratio × external stages (the motor constants are bare-core, so G is the full motor-shaft → wheel reduction).");
+  numRow(a,"gmax","G_max",CFG,"G_max",null,"Shortest (numerically largest) total reduction = most launch torque, lowest top speed. Both the single-gear optimizer and the CVT search the range [G_min, G_max].");
+  sliderRow(a,"eta_cvt",CFG,"eta_cvt",0.50,0.98,0.01,"CVT mechanical efficiency (0–1) — the headline knob for the CVT. Lower it to find the break-even efficiency where the CVT stops beating a fixed gear. CVTs are typically less efficient than gears.");
+  numRow(a,"cgrid","CVT grid pts",CFG,"cvt_grid",null,"How many candidate ratios the CVT scans across [G_min, G_max] each timestep to pick the one giving max tractive force. Higher = finer selection but slower sim (this is the perf hot spot).");
 
   // Sim
   const s=$("g-sim"); s.innerHTML="";
-  numRow(s,"dt","dt (s)",CFG,"dt");
-  numRow(s,"dts","dt sweep (s)",CFG,"dt_sweep");
-  numRow(s,"opt","optimizer pts",CFG,"opt_pts");
-  numRow(s,"turn","turn penalty (s)",CFG,"turn_penalty");
+  numRow(s,"dt","dt (s)",CFG,"dt",null,"Integration timestep for single runs / traces (s). Smaller = more accurate but slower. Semi-implicit Euler. Default 0.001.");
+  numRow(s,"dts","dt sweep (s)",CFG,"dt_sweep",null,"Coarser timestep used during sweeps (s) for speed, since a sweep re-runs the whole comparison at every point. Default 0.003.");
+  numRow(s,"opt","optimizer pts",CFG,"opt_pts",null,"How many G_fixed values the single-gear optimizer tries across [G_min, G_max] to find the one best baseline ratio (the honest single-gear competitor).");
+  numRow(s,"turn","turn penalty (s)",CFG,"turn_penalty",null,"Fixed time added at each segment boundary to model a turn (s). Default 0 — turns are off in v1. Strafing is not modeled (it only shifts effective μ/η).");
 }
 
 function buildPathEditor(){
@@ -765,6 +814,7 @@ function runSelfTests(){
 
 /* ====================== Wire up ====================== */
 function init(){
+  initTooltips();
   buildConfigUI();
   buildPathEditor();
   refreshPathDropdown();
