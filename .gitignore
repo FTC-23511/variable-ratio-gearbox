@@ -8,3 +8,6 @@ desktop.ini
 
 # logs / scratch
 *.log
+
+# Claude Code local permission grants (machine-specific)
+.claude/settings.local.json
