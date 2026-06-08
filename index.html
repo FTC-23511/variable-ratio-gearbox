@@ -115,6 +115,15 @@
     <div class="card">
       <h2>Summary</h2>
       <div id="summary">Run a comparison to see results.</div>
+      <div class="btnrow" style="margin-top:10px">
+        <button id="btn-export" class="secondary">📋 Copy summary for Claude</button>
+        <button id="btn-export-dl" class="secondary">⬇ Download .txt</button>
+        <span id="export-status" class="small"></span>
+      </div>
+      <textarea id="export-text" readonly style="display:none;width:100%;height:240px;margin-top:8px;
+        background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:8px;
+        font:12px/1.4 ui-monospace,monospace;white-space:pre;"></textarea>
+      <div class="small">Paste into Claude Chat to analyze the run. Includes full config, paths, per-architecture &amp; per-path times, and the loss budget for the currently selected trace.</div>
     </div>
 
     <!-- Sweep -->
@@ -719,6 +728,76 @@ function doSweep(){
   },10);
 }
 
+/* ====================== Export summary (for Claude Chat) ====================== */
+function buildExportText(){
+  if(!LAST){ return null; }
+  const res=LAST.res, G=res.fixedOpt.G_fixed, base=res.fixed.time;
+  const L=[]; const p=s=>L.push(s); const f3=x=>(+x).toFixed(3);
+  p("# FTC Variable-Ratio Drivetrain Sim — run export");
+  p("Single-file physics sim (goBILDA 5000 bare-core, mecanum N=4). Compares a single optimized gear vs a multi-gear shifter vs a CVT over a set of 1D match paths. Times are seconds; positive Δ = faster than the single optimized gear.");
+  p("");
+  p("## Configuration");
+  p("- Robot: m_base="+CFG.m_base+" kg, N="+CFG.N+", r_wheel="+CFG.r_wheel+" m, mu="+CFG.mu+", Crr="+CFG.Crr+", eta_drive="+CFG.eta_drive);
+  p("- Motor (FIXED, goBILDA 5000 bare core): R_m="+MOTOR.R_m+" Ω, Kt="+MOTOR.Kt+" N·m/A, Ke="+MOTOR.Ke+" V·s/rad, I_free="+MOTOR.I_free+" A, w_free="+MOTOR.w_free+" rad/s");
+  p("- Electrical: V_oc="+CFG.V_oc+" V, R_sys="+CFG.R_sys+" Ω, V_bn="+CFG.V_bn+" V, I_sw="+CFG.I_sw+" A/motor");
+  p("- Transmission mass (kg): fixed="+CFG.m_trans.fixed+", shifter="+CFG.m_trans.shifter+", cvt="+CFG.m_trans.cvt);
+  p("- Ratios: G_min="+CFG.G_min+", G_max="+CFG.G_max+"; shifter k="+Math.round(CFG.k)+" gears, t_shift="+CFG.t_shift+" s; eta_cvt="+CFG.eta_cvt+" (grid "+CFG.cvt_grid+" pts)");
+  p("- Shifter ratios used: ["+shifterRatios(CFG).map(x=>(+x).toFixed(2)).join(", ")+"]");
+  p("- Sim: dt="+CFG.dt+" s, optimizer "+CFG.opt_pts+" pts, turn penalty="+CFG.turn_penalty+" s");
+  p("");
+  p("## Paths (segment = length_m + S(stop)/T(through))");
+  PATHS.forEach(pp=>p("- "+pp.name+" (weight "+(pp.weight||1)+"): "+pp.segs.map(s=>s.L+(s.end==="stop"?"S":"T")).join(", ")));
+  p("");
+  p("## Results — total weighted time across the path set");
+  p("| Architecture | Total (s) | Δ vs baseline (s) | Δ % |");
+  p("|---|---|---|---|");
+  p("| Single fixed (G_fixed="+(+G).toFixed(2)+") | "+f3(res.fixed.time)+" | — | — |");
+  const dS=base-res.shifter.time, dC=base-res.cvt.time;
+  p("| Shifter (k="+Math.round(CFG.k)+") | "+f3(res.shifter.time)+" | "+(dS>=0?"+":"")+f3(dS)+" | "+(100*dS/base).toFixed(2)+"% |");
+  p("| CVT | "+f3(res.cvt.time)+" | "+(dC>=0?"+":"")+f3(dC)+" | "+(100*dC/base).toFixed(2)+"% |");
+  p("");
+  p("## Per-path breakdown (s)");
+  p("| Path | Single | Shifter | CVT | flags |");
+  p("|---|---|---|---|---|");
+  PATHS.forEach(pp=>{
+    const ff=withMass(CFG,"fixed",()=>simPath(pp,CFG,"fixed",G,false));
+    const sh=withMass(CFG,"shifter",()=>simPath(pp,CFG,"shifter",null,false));
+    const cv=withMass(CFG,"cvt",()=>simPath(pp,CFG,"cvt",null,false));
+    const fl=[];
+    if(ff.unreachable||sh.unreachable||cv.unreachable) fl.push("unreachable");
+    if(ff.anySlip||sh.anySlip||cv.anySlip) fl.push("slip");
+    if(ff.anyBn||sh.anyBn||cv.anyBn) fl.push("brownout");
+    p("| "+pp.name+" | "+f3(ff.time)+" | "+f3(sh.time)+" | "+f3(cv.time)+" | "+(fl.join(", ")||"—")+" |");
+  });
+  p("");
+  const pi=+($("tr-path").value)||0, arch=$("tr-arch").value;
+  const rr=withMass(CFG,arch,()=>simPath(PATHS[pi],CFG,arch,G,false)); const en=rr.energy;
+  p("## Loss budget — "+PATHS[pi].name+" / "+arch+" (integrated energy)");
+  [["battery+wire","batt"],["copper","copper"],["iron (Ke−Kt)","iron"],["friction","friction"],["gearbox","gearbox"],["slip","slip"],["useful","useful"]]
+    .forEach(([lab,k])=>p("- "+lab+": "+en[k].toFixed(1)+" J ("+(en.P_in?(100*en[k]/en.P_in).toFixed(1):"0")+"%)"));
+  p("- ∫P_in (total): "+en.P_in.toFixed(1)+" J");
+  p("");
+  p("_Generated "+new Date().toISOString()+" · github.com/FTC-23511/variable-ratio-gearbox_");
+  return L.join("\n");
+}
+function doExportCopy(){
+  const txt=buildExportText();
+  const ta=$("export-text"), st=$("export-status");
+  if(!txt){ st.textContent="Run a comparison first."; return; }
+  ta.value=txt; ta.style.display="block";
+  const done=ok=>{ st.textContent=ok?"✓ Copied to clipboard.":"Select-all + copy from the box below."; };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(txt).then(()=>done(true),()=>{ ta.focus(); ta.select(); done(false); });
+  } else { ta.focus(); ta.select(); done(false); }
+}
+function doExportDownload(){
+  const txt=buildExportText(); const st=$("export-status");
+  if(!txt){ st.textContent="Run a comparison first."; return; }
+  const blob=new Blob([txt],{type:"text/plain"}); const url=URL.createObjectURL(blob);
+  const a=document.createElement("a"); a.href=url; a.download="sim-results.txt"; a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000); st.textContent="✓ Downloaded sim-results.txt";
+}
+
 /* ====================== Acceptance self-tests (§6) ====================== */
 function runSelfTests(){
   const out=[]; const P=(name,cond,detail)=>out.push(`${cond?'<span class="pass">PASS</span>':'<span class="fail">FAIL</span>'}  ${name} — ${detail}`);
@@ -821,6 +900,8 @@ function init(){
   $("btn-run").addEventListener("click",doRun);
   $("btn-sweep").addEventListener("click",doSweep);
   $("btn-tests").addEventListener("click",runSelfTests);
+  $("btn-export").addEventListener("click",doExportCopy);
+  $("btn-export-dl").addEventListener("click",doExportDownload);
   $("btn-defaults").addEventListener("click",()=>{ CFG=defaultConfig(); PATHS=defaultPaths(); buildConfigUI(); buildPathEditor(); refreshPathDropdown(); });
   $("btn-addpath").addEventListener("click",()=>{ PATHS.push({name:"New path",weight:1,segs:[{L:1.0,end:"stop"}]}); buildPathEditor(); refreshPathDropdown(); });
   $("tr-path").addEventListener("change",renderTraces);
