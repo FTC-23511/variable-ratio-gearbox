@@ -1217,7 +1217,7 @@ window.LIFT = (function(){
     lfNumRow(me,"m_pay (kg)",CFG,"m_pay",null,"Payload mass on the carriage (kg). Adds to the lifted mass that gravity opposes the whole stroke.");
     lfNumRow(me,"N motors",CFG,"N",1,"Number of lift motors. Tractive force and battery current both scale with N. Default 2.");
     lfNumRow(me,"r_spool (m)",CFG,"r_spool",null,"Effective spool/output radius (m). Couples motor speed to carriage speed: ω_motor = v·G / r_eff, r_eff = r_spool·n_rig.");
-    lfNumRow(me,"n_rig (cascade)",CFG,"n_rig",1,"Cascade rigging multiplier. Folds into the effective radius r_eff = r_spool·n_rig — a 2-stage cascade doubles carriage travel per spool turn.");
+    lfNumRow(me,"n_rig (continuous)",CFG,"n_rig",1,"Continuous-rigging stage multiplier. Folds into the effective radius r_eff = r_spool·n_rig — a 2-stage continuous rig doubles carriage travel (and speed) per spool turn, trading lift force for stroke. Cascade rigging gives the identical multiplier in this idealized model; continuous is the easier rig.");
     lfNumRow(me,"F_fric (N)",CFG,"F_fric",null,"Constant guide friction (N), opposing motion (flips sign with velocity). Separate from gravity. No static/kinetic split.");
     lfNumRow(me,"L (m)",CFG,"L",null,"Stroke length (m). Metric = time to reach x ≥ L at full duty throughout. No brake / soft-land phase in v1.");
     lfSliderRow(me,"eta_drive",CFG,"eta_drive",0.50,0.95,0.01,"Mechanical efficiency (0–1) of the FIXED and 2-SPEED gearbox + spool. The CVT uses eta_cvt instead. Default 0.70.");
