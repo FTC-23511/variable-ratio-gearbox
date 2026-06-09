@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>FTC Variable-Ratio Drivetrain Sim — v1</title>
+<title>FTC Variable-Ratio Sim — Drivetrain + Lift</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
 <style>
   :root {
@@ -15,6 +15,12 @@
   header { padding:14px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
   header h1 { margin:0; font-size:18px; }
   header p { margin:4px 0 0; color:var(--muted); font-size:12px; }
+  nav.tabs { display:flex; gap:2px; background:var(--panel); padding:0 20px; border-bottom:1px solid var(--line); }
+  nav.tabs button { background:transparent; color:var(--muted); border:none; border-bottom:2px solid transparent;
+    border-radius:0; padding:10px 18px; font-weight:600; cursor:pointer; }
+  nav.tabs button:hover { color:var(--ink); }
+  nav.tabs button.on { color:var(--ink); border-bottom-color:var(--accent); }
+  .tab { display:none; } .tab.on { display:block; }
   .layout { display:grid; grid-template-columns:340px 1fr; gap:0; align-items:start; }
   .sidebar { background:var(--panel); border-right:1px solid var(--line); padding:14px; height:calc(100vh - 58px); overflow-y:auto; position:sticky; top:0; }
   .main { padding:16px 20px; }
@@ -67,10 +73,16 @@
 </head>
 <body>
 <header>
-  <h1>FTC Variable-Ratio Drivetrain Sim <span class="small">v1</span></h1>
-  <p>Quantifies the time benefit of a variable gear ratio (shifter / CVT) vs a single optimized ratio. Brownout / traction / power-limited DC physics. goBILDA 5000-series core. Mecanum (N=4).</p>
+  <h1>FTC Variable-Ratio Sim <span class="small">v1</span></h1>
+  <p>Quantifies the time benefit of a variable gear ratio (shifter / CVT) vs a single optimized ratio. Brownout / traction / power-limited DC physics. goBILDA 5000-series core.</p>
 </header>
 
+<nav class="tabs">
+  <button data-tab="tab-drive" class="on">Drivetrain</button>
+  <button data-tab="tab-lift">Lift</button>
+</nav>
+
+<section class="tab on" id="tab-drive">
 <div class="layout">
   <!-- ============ CONFIG SIDEBAR ============ -->
   <aside class="sidebar" id="config">
@@ -180,6 +192,101 @@
     </div>
   </main>
 </div>
+</section>
+
+<!-- ============================ LIFT TAB ============================ -->
+<section class="tab" id="tab-lift">
+<div class="layout">
+  <aside class="sidebar">
+    <details class="group" open>
+      <summary>Mechanism</summary>
+      <div class="body" id="lf-mech"></div>
+    </details>
+    <details class="group">
+      <summary>Motor — goBILDA 5000 (fixed)</summary>
+      <div class="body readonly" id="lf-motor"></div>
+    </details>
+    <details class="group" open>
+      <summary>Electrical &amp; ratio</summary>
+      <div class="body" id="lf-elec"></div>
+    </details>
+    <details class="group">
+      <summary>Simulation</summary>
+      <div class="body" id="lf-sim"></div>
+    </details>
+    <div class="btnrow">
+      <button id="lf-btn-run">Run comparison</button>
+      <button id="lf-btn-defaults" class="secondary">Reset defaults</button>
+    </div>
+    <div class="note">Lift = the drivetrain DC / brownout / loss core with 4 deltas: gravity body-load, no traction clamp, single vertical stroke 0→L, effective radius r_eff = r_spool·n_rig. Backdrivable spool (gravity pulls back at zero torque) — worst case for the variable-ratio argument.</div>
+  </aside>
+
+  <main class="main">
+    <!-- Summary -->
+    <div class="card">
+      <h2>Summary</h2>
+      <div id="lf-summary">Run a comparison to see results.</div>
+      <div id="lf-verdict" class="note"></div>
+      <div class="btnrow" style="margin-top:10px">
+        <button id="lf-btn-export" class="secondary">📋 Copy summary for Claude</button>
+        <button id="lf-btn-export-dl" class="secondary">⬇ Download .txt</button>
+        <span id="lf-export-status" class="small"></span>
+      </div>
+      <textarea id="lf-export-text" readonly style="display:none;width:100%;height:240px;margin-top:8px;
+        background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:8px;
+        font:12px/1.4 ui-monospace,monospace;white-space:pre;"></textarea>
+      <div class="small">Positive Δ = faster than the single optimized gear. Baseline re-optimized for this config.</div>
+    </div>
+
+    <!-- Sweep -->
+    <div class="card">
+      <h2>Sweep</h2>
+      <div class="row" style="justify-content:flex-start;gap:10px;flex-wrap:wrap">
+        <label style="flex:none">Variable</label>
+        <select id="lf-sweep-var">
+          <option value="mass">lifted mass (kg)</option>
+          <option value="stroke">stroke L (m)</option>
+        </select>
+        <label style="flex:none">min</label><input type="number" id="lf-sweep-min" value="1" step="any" style="width:70px">
+        <label style="flex:none">max</label><input type="number" id="lf-sweep-max" value="22" step="any" style="width:70px">
+        <label style="flex:none">points</label><input type="number" id="lf-sweep-pts" value="12" style="width:60px">
+        <button id="lf-btn-sweep" class="secondary">Run sweep</button>
+        <button id="lf-btn-sweep-dl" class="secondary">⬇ CSV</button>
+      </div>
+      <div class="note">Ratio-only (eta_cvt set = eta_drive) so the chart isolates the ratio benefit from the efficiency bump. Single baseline re-optimized at every point. Coarser dt for speed.</div>
+      <div id="lf-sweep-plot" class="plot"></div>
+    </div>
+
+    <!-- Traces -->
+    <div class="card">
+      <h2>Traces</h2>
+      <div class="row" style="justify-content:flex-start;gap:10px;flex-wrap:wrap">
+        <label style="flex:none">Architecture</label>
+        <select id="lf-tr-arch"><option value="cvt">CVT</option><option value="fixed">Single fixed</option><option value="shifter">2-speed</option></select>
+      </div>
+      <div class="grid2">
+        <div id="lf-plot-xv" class="plot"></div>
+        <div id="lf-plot-iv" class="plot"></div>
+        <div id="lf-plot-ts" class="plot"></div>
+      </div>
+    </div>
+
+    <!-- Loss budget -->
+    <div class="card">
+      <h2>Loss budget (integrated energy)</h2>
+      <div id="lf-plot-loss" class="plot" style="height:300px"></div>
+      <div class="small">Buckets: battery+wire · copper · iron (Ke−Kt gap) · motor-friction · gearbox · useful (carriage work, incl. lifting against gravity). Sum closes against ∫P_in (acceptance test 4).</div>
+    </div>
+
+    <!-- Self tests -->
+    <div class="card">
+      <h2>Acceptance self-tests (build brief §6)</h2>
+      <div class="btnrow"><button id="lf-btn-tests" class="secondary">Run self-tests</button></div>
+      <pre class="dbg" id="lf-test-out">Click "Run self-tests".</pre>
+    </div>
+  </main>
+</div>
+</section>
 
 <script>
 "use strict";
@@ -906,8 +1013,524 @@ function init(){
   $("btn-addpath").addEventListener("click",()=>{ PATHS.push({name:"New path",weight:1,segs:[{L:1.0,end:"stop"}]}); buildPathEditor(); refreshPathDropdown(); });
   $("tr-path").addEventListener("change",renderTraces);
   $("tr-arch").addEventListener("change",renderTraces);
+  // tab switching (drivetrain ↔ lift)
+  document.querySelectorAll("nav.tabs button").forEach(b=>{
+    b.addEventListener("click",()=>switchTab(b.dataset.tab));
+  });
+}
+function switchTab(id){
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on",t.id===id));
+  document.querySelectorAll("nav.tabs button").forEach(b=>b.classList.toggle("on",b.dataset.tab===id));
+  // Plotly charts laid out while display:none render at zero size until a resize.
+  window.dispatchEvent(new Event("resize"));
+  if(id==="tab-lift" && window.LIFT) window.LIFT.ensureFirstRun();
 }
 document.addEventListener("DOMContentLoaded",init);
+</script>
+
+<script>
+"use strict";
+/* ===================================================================
+   FTC Variable-Ratio LIFT Sim — engine + UI (ftc_lift_sim_build_brief.md)
+   Reuses the drivetrain MOTOR constants + infoIcon/tooltip system (globals).
+   Lift = drivetrain DC/brownout/loss core with 4 deltas (brief §2):
+     D1 no traction clamp · D2 gravity body-load + guide friction ·
+     D3 single vertical stroke 0→L, no brake · D4 r_eff = r_spool·n_rig.
+   Namespaced in one IIFE; every new element ID is prefixed "lf-".
+   =================================================================== */
+window.LIFT = (function(){
+  const G = 9.81;
+  const $ = id => document.getElementById(id);
+
+  // ---------- Default lift config (brief §3) ----------
+  function defaultLiftConfig(){
+    return {
+      // mechanism
+      m_carriage:1.5, m_pay:0.5, N:2, r_spool:0.018, n_rig:1, F_fric:6, L:0.7,
+      eta_drive:0.70, eta_cvt:0.85,
+      // electrical & ratio
+      V_oc:13.6, R_sys:0.07, V_bn:9.0, I_sw:20, G_min:2, G_max:20, t_shift:0.10,
+      // sim
+      dt:0.001, dt_sweep:0.003, opt_pts:40, cvt_grid:50, shift_grid:8, seg_timeout:10.0,
+    };
+  }
+
+  // ---------- Core per-timestep solve (brief §3 A–F). NO traction clamp. ----------
+  function liftSolve(v, Gr, d, cfg, eta, re){
+    const { N, R_sys, V_oc, V_bn, I_sw } = cfg;
+    const { R_m, Kt, Ke, I_free } = MOTOR;          // MOTOR = drivetrain global
+    const w_motor = v * Gr / re;                     // A
+    let I = (d*V_oc - Ke*w_motor) / (R_m + d*N*R_sys); // B
+    const I_bn = (V_oc - V_bn) / (N*R_sys);          // C: brownout current ceiling
+    const I_cap_hi = Math.min(I_sw, I_bn);
+    if (I > I_cap_hi) I = I_cap_hi;
+    if (I < -I_sw) I = -I_sw;
+    const V_bus = V_oc - N*I*R_sys;                  // D
+    const brownout_flag = V_bus < V_bn;
+    const sgnI = I === 0 ? 0 : Math.sign(I);
+    const tau = Kt * (I - sgnI*I_free);              // E
+    const F_drive = N * tau * Gr * eta / re;         // F — no clamp; low-gear torque kept
+    return { w_motor, I, V_bus, tau, F_drive, brownout_flag };
+  }
+
+  function newEnergy(){ return {p_in:0,batt:0,copper:0,iron:0,friction:0,gearbox:0,useful:0}; }
+
+  // ---------- Simulate one vertical stroke 0→L (brief §3 solve order) ----------
+  // gearArg: fixed → number; cvt → null; shifter → [G_lo, G_hi]
+  function simStroke(cfg, arch, gearArg, wantTrace){
+    const re = cfg.r_spool * cfg.n_rig;
+    const m  = cfg.m_carriage + cfg.m_pay;
+    const Fg = m * G;
+    const eta = arch === "cvt" ? cfg.eta_cvt : cfg.eta_drive;
+    const dt = cfg.dt;
+    const trace = wantTrace ? {t:[],x:[],v:[],I:[],vbus:[],w:[],tau:[],Gr:[]} : null;
+    const en = newEnergy();
+    let v=0, x=0, t=0, shifts=0, brownout=false;
+    // shifter state
+    let active=null, pending=null, shiftTimer=0, dwellTimer=0;
+    const pair = arch === "shifter" ? gearArg : null;
+
+    while(true){
+      let Gr, step, F_drive;
+
+      if (arch === "fixed"){
+        Gr = gearArg; step = liftSolve(v, Gr, 1, cfg, eta, re); F_drive = step.F_drive;
+      } else if (arch === "cvt"){
+        // grid-scan G over [G_min,G_max], pick max F_drive (max accel ceiling)
+        let best=-Infinity, bestG=cfg.G_min, bestStep=null, n=cfg.cvt_grid;
+        for(let j=0;j<n;j++){
+          const Gi = cfg.G_min + (cfg.G_max-cfg.G_min)*(j/(n-1));
+          const s = liftSolve(v, Gi, 1, cfg, eta, re);
+          if (s.F_drive > best){ best=s.F_drive; bestG=Gi; bestStep=s; }
+        }
+        Gr=bestG; step=bestStep; F_drive=step.F_drive;
+      } else { // shifter: 2-speed, greedy max instantaneous F_drive, t_shift clutch-cut
+        let bestF=-Infinity, bestG=pair[0];
+        for(const Gi of pair){
+          const s = liftSolve(v, Gi, 1, cfg, eta, re);
+          if (s.F_drive >= bestF){ bestF=s.F_drive; bestG=Gi; }
+        }
+        if (active==null) active=bestG;
+        if (dwellTimer>0) dwellTimer-=dt;
+        const dwellFloor = cfg.t_shift>0 ? Math.max(0.15, 2*cfg.t_shift) : 0;
+        if (shiftTimer<=0 && dwellTimer<=0 && bestG!==active){
+          const fCur = liftSolve(v, active, 1, cfg, eta, re).F_drive;
+          if (bestF > fCur*1.02){
+            if (cfg.t_shift>0){ shiftTimer=cfg.t_shift; pending=bestG; dwellTimer=cfg.t_shift+dwellFloor; shifts++; }
+            else { active=bestG; shifts++; }
+          }
+        }
+        if (shiftTimer>0){
+          Gr=active; shiftTimer-=dt;
+          step = liftSolve(v, Gr, 1, cfg, eta, re);
+          step = {...step, F_drive:0, tau:0, I:0};   // clutch cut
+          if (shiftTimer<=0 && pending!=null){ active=pending; pending=null; }
+        } else {
+          Gr=active; step = liftSolve(v, Gr, 1, cfg, eta, re);
+        }
+        F_drive = step.F_drive;
+      }
+
+      // ---- integrate (semi-implicit Euler), brief §3 H–I ----
+      const fric_dir = v!==0 ? Math.sign(v) : Math.sign(F_drive - Fg);
+      const F_net = F_drive - Fg - cfg.F_fric*fric_dir;
+      const a = F_net / m;
+      v += a*dt; x += v*dt; t += dt;
+
+      // ---- loss budget (brief §3 J) ----
+      const I=step.I, w=step.w_motor, N=cfg.N;
+      en.p_in    += cfg.V_oc*(N*I)*dt;
+      en.batt    += (N*I)*(N*I)*cfg.R_sys*dt;
+      en.copper  += N*I*I*MOTOR.R_m*dt;
+      en.friction+= N*MOTOR.Kt*MOTOR.I_free*Math.abs(w)*dt;
+      en.iron    += N*(MOTOR.Ke-MOTOR.Kt)*I*w*dt;
+      en.gearbox += F_drive*v*(1-eta)/eta*dt;
+      en.useful  += F_drive*v*dt;
+      if (step.brownout_flag) brownout=true;
+      if (trace){ trace.t.push(t); trace.x.push(x); trace.v.push(v); trace.I.push(I);
+        trace.vbus.push(step.V_bus); trace.w.push(w); trace.tau.push(step.tau); trace.Gr.push(Gr); }
+
+      if (x >= cfg.L) break;
+      if (t > cfg.seg_timeout) return { time:t, unreachable:true, brownout, shifts, trace, energy:en };
+    }
+    return { time:t, unreachable:false, brownout, shifts, trace, energy:en };
+  }
+
+  // ---------- Single-gear optimizer (brief §5): min time-to-L over [G_min,G_max] ----------
+  function optimizeSingle(cfg){
+    const n=cfg.opt_pts; let best=Infinity, bestG=cfg.G_min; const curve=[];
+    for(let j=0;j<n;j++){
+      const Gr = cfg.G_min + (cfg.G_max-cfg.G_min)*(j/(n-1));
+      const r = simStroke(cfg, "fixed", Gr, false);
+      const tt = r.unreachable ? Infinity : r.time;
+      curve.push({G:Gr, time:r.unreachable?null:r.time, unreachable:r.unreachable});
+      if (tt < best){ best=tt; bestG=Gr; }
+    }
+    return { G_fixed:bestG, time:isFinite(best)?best:null, unreachable:!isFinite(best), curve };
+  }
+
+  // ---------- 2-speed pair optimizer (brief §4: optimize the pair over a grid) ----------
+  function optimizeShifter(cfg){
+    const n=cfg.shift_grid, gs=[];
+    for(let j=0;j<n;j++) gs.push(cfg.G_min + (cfg.G_max-cfg.G_min)*(j/(n-1)));
+    let best=Infinity, bestPair=[gs[0],gs[0]], bestShifts=0, bestRun=null;
+    for(let i=0;i<n;i++) for(let j=i;j<n;j++){
+      const pair=[gs[i],gs[j]];
+      const r = simStroke(cfg, "shifter", pair, false);
+      if (!r.unreachable && r.time < best){ best=r.time; bestPair=pair; bestShifts=r.shifts; bestRun=r; }
+    }
+    return { pair:bestPair, time:isFinite(best)?best:null, unreachable:!isFinite(best), shifts:bestShifts };
+  }
+
+  // ---------- Full comparison ----------
+  function runComparison(cfg){
+    const single  = optimizeSingle(cfg);
+    const cvt      = simStroke(cfg, "cvt", null, false);
+    const shifter  = optimizeShifter(cfg);
+    return { single, cvt, shifter };
+  }
+
+  /* ====================== State + UI ====================== */
+  let CFG = defaultLiftConfig();
+  let LAST = null;
+  let firstRunDone = false;
+
+  function lfNumRow(parent,label,obj,prop,step,tip){
+    const div=document.createElement("div"); div.className="row";
+    div.innerHTML=`<label>${label}${infoIcon(tip)}</label><input type="number" step="${step||'any'}">`;
+    const inp=div.querySelector("input"); inp.value=obj[prop];
+    inp.addEventListener("change",()=>{ obj[prop]=parseFloat(inp.value); });
+    parent.appendChild(div); return inp;
+  }
+  function lfSliderRow(parent,label,obj,prop,min,max,stp,tip){
+    const div=document.createElement("div"); div.className="row";
+    div.innerHTML=`<label>${label}${infoIcon(tip)}</label><input type="range" min="${min}" max="${max}" step="${stp}"><span class="val"></span>`;
+    const inp=div.querySelector("input"), val=div.querySelector(".val");
+    inp.value=obj[prop]; val.textContent=(+obj[prop]).toFixed(2);
+    inp.addEventListener("input",()=>{ obj[prop]=parseFloat(inp.value); val.textContent=(+obj[prop]).toFixed(2); });
+    parent.appendChild(div);
+  }
+
+  function buildConfigUI(){
+    const me=$("lf-mech"); me.innerHTML="";
+    lfNumRow(me,"m_carriage (kg)",CFG,"m_carriage",null,"Moving carriage mass (kg). The frame-mounted gearbox is NOT lifted, so it is excluded (true for a winch lift). Total lifted mass = m_carriage + m_pay.");
+    lfNumRow(me,"m_pay (kg)",CFG,"m_pay",null,"Payload mass on the carriage (kg). Adds to the lifted mass that gravity opposes the whole stroke.");
+    lfNumRow(me,"N motors",CFG,"N",1,"Number of lift motors. Tractive force and battery current both scale with N. Default 2.");
+    lfNumRow(me,"r_spool (m)",CFG,"r_spool",null,"Effective spool/output radius (m). Couples motor speed to carriage speed: ω_motor = v·G / r_eff, r_eff = r_spool·n_rig.");
+    lfNumRow(me,"n_rig (continuous)",CFG,"n_rig",1,"Continuous-rigging stage multiplier. Folds into the effective radius r_eff = r_spool·n_rig — a 2-stage continuous rig doubles carriage travel (and speed) per spool turn, trading lift force for stroke. Cascade rigging gives the identical multiplier in this idealized model; continuous is the easier rig.");
+    lfNumRow(me,"F_fric (N)",CFG,"F_fric",null,"Constant guide friction (N), opposing motion (flips sign with velocity). Separate from gravity. No static/kinetic split.");
+    lfNumRow(me,"L (m)",CFG,"L",null,"Stroke length (m). Metric = time to reach x ≥ L at full duty throughout. No brake / soft-land phase in v1.");
+    lfSliderRow(me,"eta_drive",CFG,"eta_drive",0.50,0.95,0.01,"Mechanical efficiency (0–1) of the FIXED and 2-SPEED gearbox + spool. The CVT uses eta_cvt instead. Default 0.70.");
+    lfSliderRow(me,"eta_cvt",CFG,"eta_cvt",0.50,0.98,0.01,"CVT mechanical efficiency (0–1) — the headline knob. Scales all CVT force. Lower it to find the break-even where a real (lossy) CVT stops beating a fixed gear. Sweeps force this = eta_drive (ratio-only).");
+
+    $("lf-motor").innerHTML =
+      `R_m = ${MOTOR.R_m} Ω<br>Kt = ${MOTOR.Kt} N·m/A<br>Ke = ${MOTOR.Ke} V·s/rad<br>`+
+      `I_free = ${MOTOR.I_free} A<br>w_free = ${MOTOR.w_free} rad/s<br>`+
+      `<span class="small">Bare core (6000 rpm theoretical). G = planetary × external. Kt≠Ke by design (iron loss).</span>`;
+
+    const e=$("lf-elec"); e.innerHTML="";
+    lfNumRow(e,"V_oc (V)",CFG,"V_oc",null,"Battery open-circuit (no-load) voltage. ≈13.6 V fresh pack. Source voltage before the R_sys drop under load.");
+    lfNumRow(e,"R_sys (Ω)",CFG,"R_sys",null,"Combined battery + wiring resistance (Ω). Sets the brownout current ceiling I_bn = (V_oc−V_bn)/(N·R_sys); higher R_sys caps current harder. Typical 0.05–0.10 Ω.");
+    lfNumRow(e,"V_bn (V)",CFG,"V_bn",null,"Brownout threshold (V). Current is capped so V_bus stays ≥ V_bn. ≈9 V. (The I_bn cap usually prevents the bus dip — the symptom is current-capping, not a brownout flag.)");
+    lfNumRow(e,"I_sw (A/motor)",CFG,"I_sw",null,"Per-motor software current limit (A). Caps each motor's current independent of the brownout cap.");
+    lfNumRow(e,"G_min",CFG,"G_min",null,"Total reduction floor (tallest gear, highest speed, least force). Both the single-gear optimizer and the CVT search [G_min, G_max].");
+    lfNumRow(e,"G_max",CFG,"G_max",null,"Total reduction ceiling (shortest gear, most lift force, lowest speed). When the single optimizer pins here, the limit is total reduction — a fixed-gear fix, not a variability problem.");
+    lfNumRow(e,"t_shift (s)",CFG,"t_shift",null,"2-speed clutch dead-time per gear change (s). Drive force = 0 while shifting. On a single lift the 2-speed almost never shifts, so this rarely bites.");
+
+    const s=$("lf-sim"); s.innerHTML="";
+    lfNumRow(s,"dt (s)",CFG,"dt",null,"Integration timestep for single runs / traces (s). Semi-implicit Euler. Default 0.001.");
+    lfNumRow(s,"dt sweep (s)",CFG,"dt_sweep",null,"Coarser timestep used during sweeps for speed. Default 0.003.");
+    lfNumRow(s,"optimizer pts",CFG,"opt_pts",null,"How many G_fixed values the single-gear optimizer tries across [G_min,G_max] to find the honest baseline. Default 40.");
+    lfNumRow(s,"CVT grid pts",CFG,"cvt_grid",null,"Candidate ratios the CVT scans across [G_min,G_max] each timestep to pick max force. Default 50.");
+    lfNumRow(s,"2-speed grid pts",CFG,"shift_grid",null,"Grid the 2-speed pair optimizer searches (all i≤j pairs). Coarser than the single grid, so the 2-speed can't simply replicate the single optimum. Default 15.");
+  }
+
+  // ---------- Render ----------
+  const fmt=(x,d=2)=>(x==null||!isFinite(x))?"—":(+x).toFixed(d);
+
+  function renderSummary(res){
+    const sUn = res.single.unreachable, base = res.single.time;
+    const pct = r => (sUn||r.unreachable||!base) ? null : 100*(base - r.time)/base;
+    const rows=[
+      ["Single fixed (optimized)", res.single.unreachable?{time:null}:{time:res.single.time}, res.single.unreachable?"UNREACHABLE":`G_fixed = ${fmt(res.single.G_fixed,2)}`, res.single.unreachable, null, 0],
+      ["CVT", res.cvt, `G∈[${CFG.G_min},${CFG.G_max}], η=${fmt(CFG.eta_cvt,2)}`, res.cvt.unreachable, pct(res.cvt), 0],
+      ["2-speed", res.shifter.unreachable?{time:null}:{time:res.shifter.time}, `pair ${fmt(res.shifter.pair[0],2)}/${fmt(res.shifter.pair[1],2)}`, res.shifter.unreachable, (sUn||res.shifter.unreachable||!base)?null:100*(base-res.shifter.time)/base, res.shifter.shifts],
+    ];
+    let html=`<table><tr><th>Architecture</th><th>Time to L (s)</th><th>Δ % vs single</th><th>Shifts</th><th>Flags</th></tr>`;
+    for(const [name,r,note,un,p,sh] of rows){
+      const flags=[];
+      if(un) flags.push(`<span class="flag un">UNREACHABLE</span>`);
+      if(r&&r.brownout) flags.push(`<span class="flag bn">brownout</span>`);
+      const pStr = name.startsWith("Single") ? "—" : (p==null?"—":`<b style="color:${p>=0?'var(--good)':'var(--bad)'}">${p>=0?'+':''}${fmt(p,2)}%</b>`);
+      html+=`<tr><td>${name}<div class="small">${note}</div></td><td>${fmt(r?r.time:null,3)}</td><td>${pStr}</td><td>${name==="2-speed"?sh:"—"}</td><td>${flags.join("")||"—"}</td></tr>`;
+    }
+    html+=`</table>`;
+    $("lf-summary").innerHTML=html;
+
+    // verdict line (brief §7)
+    let v="";
+    if(sUn) v="⚠ Single gear is UNREACHABLE here — the fix is more total reduction (raise G_max), not gear variability. Raising G_max lifts both single and CVT together.";
+    else { const pc=pct(res.cvt);
+      if(pc!=null && pc<0.5) v="The single optimum is pinned with no useful speed range — the CVT has nothing better to pick (Δ≈0). Don't build variability for this load; it's a fixed-gear problem.";
+      else if(pc!=null){ const bump=CFG.eta_cvt!==CFG.eta_drive;
+        v=`CVT is ${fmt(pc,1)}% faster than the single optimum`+(bump?` (includes the η bump: η_cvt=${fmt(CFG.eta_cvt,2)} vs η_drive=${fmt(CFG.eta_drive,2)} — the sweep isolates the ratio-only benefit).`:` (ratio-only, η equal).`)+` 2-speed ≈ ${fmt((res.shifter.time&&base)?100*(base-res.shifter.time)/base:0,1)}% — a single vertical stroke rarely rewards shifting.`; }
+    }
+    $("lf-verdict").textContent=v;
+  }
+
+  function renderTraces(){
+    if(!LAST) return;
+    const arch=$("lf-tr-arch").value;
+    const gearArg = arch==="fixed" ? LAST.res.single.G_fixed : (arch==="shifter" ? LAST.res.shifter.pair : null);
+    const r = simStroke(CFG, arch, gearArg, true);
+    const tr=r.trace;
+    const base={paper_bgcolor:"#222c38",plot_bgcolor:"#0d1117",font:{color:"#9aa7b4",size:11},
+      margin:{l:50,r:50,t:30,b:35},showlegend:true,legend:{font:{size:10},orientation:"h",y:1.15}};
+    // x(t) + v(t)
+    Plotly.newPlot("lf-plot-xv",[
+      {x:tr.t,y:tr.x,mode:"lines",name:"x (m)",line:{color:"#4da3ff",width:1.5}},
+      {x:tr.t,y:tr.v,mode:"lines",name:"v (m/s)",yaxis:"y2",line:{color:"#3fb950",width:1.5}},
+    ],{...base,title:{text:"x(t) + v(t)",font:{size:13}},xaxis:{title:"t (s)",gridcolor:"#30363d"},
+       yaxis:{title:"x (m)",gridcolor:"#30363d"},yaxis2:{title:"v (m/s)",overlaying:"y",side:"right",gridcolor:"rgba(0,0,0,0)"}},
+       {displayModeBar:false});
+    // I(t) + V_bus(t)
+    Plotly.newPlot("lf-plot-iv",[
+      {x:tr.t,y:tr.I,mode:"lines",name:"I (A)",line:{color:"#d29922",width:1.5}},
+      {x:tr.t,y:tr.vbus,mode:"lines",name:"V_bus (V)",yaxis:"y2",line:{color:"#8957e5",width:1.5}},
+    ],{...base,title:{text:"I(t) + V_bus(t)",font:{size:13}},xaxis:{title:"t (s)",gridcolor:"#30363d"},
+       yaxis:{title:"I (A)",gridcolor:"#30363d"},yaxis2:{title:"V_bus (V)",overlaying:"y",side:"right",gridcolor:"rgba(0,0,0,0)"}},
+       {displayModeBar:false});
+    // torque-speed curve + operating points
+    const ws=[],taus=[];
+    for(let i=0;i<=50;i++){ const w=MOTOR.w_free*i/50; ws.push(w); taus.push(MOTOR.tau_stall*(1-w/MOTOR.w_free)); }
+    Plotly.newPlot("lf-plot-ts",[
+      {x:ws,y:taus,mode:"lines",name:"τ-ω curve",line:{color:"#9aa7b4",width:1.5}},
+      {x:tr.w,y:tr.tau,mode:"markers",name:"operating pts",marker:{color:"#f85149",size:3,opacity:0.5}},
+    ],{...base,title:{text:"Motor operating point",font:{size:13}},margin:{l:50,r:10,t:30,b:35},
+       xaxis:{title:"ω motor (rad/s)",gridcolor:"#30363d"},yaxis:{title:"τ (N·m)",gridcolor:"#30363d"}},
+       {displayModeBar:false});
+    renderLoss(r.energy);
+  }
+
+  function renderLoss(en){
+    const keys=["batt","copper","iron","friction","gearbox","useful"];
+    const labels=["battery+wire","copper","iron","motor-friction","gearbox","useful"];
+    const colors=["#8957e5","#f85149","#d29922","#db6d28","#6e7681","#3fb950"];
+    Plotly.newPlot("lf-plot-loss",[{x:labels,y:keys.map(k=>en[k]),type:"bar",marker:{color:colors}}],
+      {margin:{l:55,r:10,t:10,b:60},paper_bgcolor:"#222c38",plot_bgcolor:"#0d1117",
+       font:{color:"#9aa7b4",size:11},yaxis:{title:"Energy (J)",gridcolor:"#30363d"},xaxis:{gridcolor:"#30363d"}},
+      {displayModeBar:false});
+  }
+
+  // ---------- Run handlers ----------
+  function doRun(){
+    const btn=$("lf-btn-run"); btn.disabled=true; btn.textContent="Running…";
+    setTimeout(()=>{
+      try{
+        const res=runComparison(CFG); LAST={res};
+        renderSummary(res); renderTraces();
+      }catch(err){ $("lf-summary").innerHTML=`<span class="fail">Error: ${err.message}</span>`; console.error(err); }
+      btn.disabled=false; btn.textContent="Run comparison";
+    },10);
+  }
+
+  // returns {xs, dCvt, dShift, singleG, singleT, cvtT, shiftT, shiftN, feasible}
+  function computeSweep(varName, lo, hi, n){
+    const xs=[],dCvt=[],dShift=[],rows=[];
+    for(let j=0;j<n;j++){
+      const val = lo + (hi-lo)*(j/(n-1));
+      const cfg = Object.assign(defaultLiftConfig(), CFG);  // shallow clone of current cfg
+      cfg.dt = CFG.dt_sweep; cfg.cvt_grid=Math.min(CFG.cvt_grid,50);
+      cfg.eta_cvt = cfg.eta_drive;                          // ratio-only (brief §5)
+      if (varName==="mass"){ cfg.m_carriage=val; cfg.m_pay=0; }
+      else { cfg.L=val; }
+      const res=runComparison(cfg);
+      const sUn=res.single.unreachable, base=res.single.time;
+      const pc = r => (sUn||r.unreachable||!base)?null:100*(base-r.time)/base;
+      const pCvt=pc(res.cvt), pShift=(sUn||res.shifter.unreachable||!base)?null:100*(base-res.shifter.time)/base;
+      xs.push(val); dCvt.push(pCvt); dShift.push(pShift);
+      rows.push({x:val, singleT:sUn?null:base, singleG:sUn?null:res.single.G_fixed,
+        cvtT:res.cvt.unreachable?null:res.cvt.time, cvtPct:pCvt,
+        shiftT:res.shifter.unreachable?null:res.shifter.time, shiftPct:pShift, shiftN:res.shifter.shifts,
+        feasible:!sUn});
+    }
+    return {xs,dCvt,dShift,rows,varName};
+  }
+
+  let LAST_SWEEP=null;
+  function doSweep(){
+    const varName=$("lf-sweep-var").value, lo=parseFloat($("lf-sweep-min").value),
+      hi=parseFloat($("lf-sweep-max").value), n=Math.max(2,Math.round(parseFloat($("lf-sweep-pts").value)));
+    const btn=$("lf-btn-sweep"); btn.disabled=true; btn.textContent="Sweeping…";
+    setTimeout(()=>{
+      const sw=computeSweep(varName,lo,hi,n); LAST_SWEEP=sw;
+      const xlabel = varName==="mass" ? "lifted mass (kg)" : "stroke L (m)";
+      Plotly.newPlot("lf-sweep-plot",[
+        {x:sw.xs,y:sw.dCvt,mode:"lines+markers",name:"CVT",line:{color:"#3fb950"}},
+        {x:sw.xs,y:sw.dShift,mode:"lines+markers",name:"2-speed",line:{color:"#4da3ff"}},
+        {x:[sw.xs[0],sw.xs[sw.xs.length-1]],y:[0,0],mode:"lines",name:"break-even",line:{color:"#6e7681",dash:"dot",width:1}},
+      ],{title:{text:`Ratio-only benefit vs ${xlabel}`,font:{size:13}},margin:{l:55,r:10,t:35,b:40},
+         paper_bgcolor:"#222c38",plot_bgcolor:"#0d1117",font:{color:"#9aa7b4",size:11},
+         xaxis:{title:xlabel,gridcolor:"#30363d"},yaxis:{title:"Δ time vs single (%)",gridcolor:"#30363d"},
+         showlegend:true,legend:{font:{size:10}}},{displayModeBar:false});
+      btn.disabled=false; btn.textContent="Run sweep";
+    },10);
+  }
+
+  function doSweepCsv(){
+    const st=$("lf-export-status");
+    if(!LAST_SWEEP){ st.textContent="Run a sweep first."; return; }
+    const sw=LAST_SWEEP;
+    const head="sweep,x,single_t,single_G,cvt_t,cvt_pct,shift_t,shift_pct,shift_n,single_feasible";
+    const lines=[head];
+    for(const r of sw.rows){
+      const c=v=>(v==null?"":v);
+      lines.push([sw.varName,r.x,c(r.singleT),c(r.singleG),c(r.cvtT),c(r.cvtPct),c(r.shiftT),c(r.shiftPct),r.shiftN,r.feasible?"True":"False"].join(","));
+    }
+    const blob=new Blob([lines.join("\n")],{type:"text/csv"}); const url=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=url; a.download="lift_sweep.csv"; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000); st.textContent="✓ Downloaded lift_sweep.csv";
+  }
+
+  /* ====================== Export summary (for Claude Chat) ====================== */
+  function buildExportText(){
+    if(!LAST) return null;
+    const res=LAST.res, L=[]; const p=s=>L.push(s); const f3=x=>(x==null?"—":(+x).toFixed(3));
+    const base=res.single.unreachable?null:res.single.time;
+    p("# FTC Variable-Ratio LIFT Sim — run export");
+    p("Single-file physics sim (goBILDA 5000 bare-core). Single vertical stroke 0→L against constant gravity, no traction clamp, backdrivable spool. Compares a single optimized gear vs a 2-speed shifter vs a CVT. Times = seconds; positive Δ = faster than the single optimized gear.");
+    p("");
+    p("## Configuration");
+    p("- Mechanism: m_carriage="+CFG.m_carriage+" kg, m_pay="+CFG.m_pay+" kg (lifted="+(CFG.m_carriage+CFG.m_pay)+" kg), N="+CFG.N+", r_spool="+CFG.r_spool+" m, n_rig="+CFG.n_rig+" (r_eff="+(CFG.r_spool*CFG.n_rig).toFixed(4)+" m), F_fric="+CFG.F_fric+" N, L="+CFG.L+" m");
+    p("- Efficiency: eta_drive="+CFG.eta_drive+", eta_cvt="+CFG.eta_cvt);
+    p("- Motor (FIXED goBILDA 5000 bare core): R_m="+MOTOR.R_m+" Ω, Kt="+MOTOR.Kt+", Ke="+MOTOR.Ke+", I_free="+MOTOR.I_free+" A");
+    p("- Electrical & ratio: V_oc="+CFG.V_oc+" V, R_sys="+CFG.R_sys+" Ω, V_bn="+CFG.V_bn+" V, I_sw="+CFG.I_sw+" A/motor, G∈["+CFG.G_min+","+CFG.G_max+"], t_shift="+CFG.t_shift+" s");
+    p("- Sim: dt="+CFG.dt+" s, optimizer "+CFG.opt_pts+" pts, CVT grid "+CFG.cvt_grid+", 2-speed grid "+CFG.shift_grid);
+    p("");
+    p("## Results — time to reach L");
+    p("| Architecture | Time (s) | Δ % vs single | Shifts | Flags |");
+    p("|---|---|---|---|---|");
+    const pc=r=>(res.single.unreachable||r.unreachable||!base)?"—":((100*(base-r.time)/base>=0?"+":"")+(100*(base-r.time)/base).toFixed(2)+"%");
+    p("| Single fixed (G="+(res.single.unreachable?"—":(+res.single.G_fixed).toFixed(2))+") | "+f3(base)+" | — | — | "+(res.single.unreachable?"UNREACHABLE":"—")+" |");
+    p("| CVT | "+f3(res.cvt.unreachable?null:res.cvt.time)+" | "+pc(res.cvt)+" | — | "+(res.cvt.brownout?"brownout":"—")+" |");
+    p("| 2-speed (pair "+(+res.shifter.pair[0]).toFixed(2)+"/"+(+res.shifter.pair[1]).toFixed(2)+") | "+f3(res.shifter.unreachable?null:res.shifter.time)+" | "+((res.single.unreachable||res.shifter.unreachable||!base)?"—":((100*(base-res.shifter.time)/base>=0?"+":"")+(100*(base-res.shifter.time)/base).toFixed(2)+"%"))+" | "+res.shifter.shifts+" | — |");
+    p("");
+    const arch=$("lf-tr-arch").value;
+    const gearArg = arch==="fixed" ? res.single.G_fixed : (arch==="shifter"?res.shifter.pair:null);
+    const rr=simStroke(CFG,arch,gearArg,false), en=rr.energy;
+    p("## Loss budget — "+arch+" (integrated energy)");
+    [["battery+wire","batt"],["copper","copper"],["iron (Ke−Kt)","iron"],["motor-friction","friction"],["gearbox","gearbox"],["useful (carriage work)","useful"]]
+      .forEach(([lab,k])=>p("- "+lab+": "+en[k].toFixed(1)+" J ("+(en.p_in?(100*en[k]/en.p_in).toFixed(1):"0")+"%)"));
+    p("- ∫P_in (total): "+en.p_in.toFixed(1)+" J");
+    return L.join("\n");
+  }
+  function doExportCopy(){
+    const txt=buildExportText(), ta=$("lf-export-text"), st=$("lf-export-status");
+    if(!txt){ st.textContent="Run a comparison first."; return; }
+    ta.value=txt; ta.style.display="block";
+    const done=ok=>{ st.textContent=ok?"✓ Copied to clipboard.":"Select-all + copy from the box below."; };
+    if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(()=>done(true),()=>{ta.focus();ta.select();done(false);});
+    else { ta.focus(); ta.select(); done(false); }
+  }
+  function doExportDownload(){
+    const txt=buildExportText(), st=$("lf-export-status");
+    if(!txt){ st.textContent="Run a comparison first."; return; }
+    const blob=new Blob([txt],{type:"text/plain"}), url=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=url; a.download="lift-results.txt"; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),1000); st.textContent="✓ Downloaded lift-results.txt";
+  }
+
+  /* ====================== Acceptance self-tests (brief §6) ====================== */
+  function runSelfTests(){
+    const out=[]; const P=(name,cond,detail)=>out.push(`${cond?'<span class="pass">PASS</span>':'<span class="fail">FAIL</span>'}  ${name} — ${detail}`);
+    const cfg=defaultLiftConfig();
+    const re=cfg.r_spool*cfg.n_rig;
+
+    // 1. Stall (v=0, d=1): I = V_oc/(R_m + N·R_sys) clamped → ≈9.418 A, V_bus≈12.28 V
+    {
+      const st=liftSolve(0, 5.23, 1, cfg, cfg.eta_drive, re);
+      const expI=cfg.V_oc/(MOTOR.R_m+cfg.N*cfg.R_sys);
+      P("1 Stall current/bus", Math.abs(st.I-expI)<0.05 && Math.abs(st.I-9.418)<0.05 && st.V_bus>cfg.V_bn && isFinite(st.F_drive) && st.F_drive>0,
+        `I=${fmt(st.I,3)}A (exp 9.418), V_bus=${fmt(st.V_bus,2)}V (exp 12.28), F=${fmt(st.F_drive,1)}N`);
+    }
+    // 2. Free speed (Ke·w ≈ V_oc): I→0, F→0
+    {
+      const Gr=5.23, w=cfg.V_oc/MOTOR.Ke, v=w*re/Gr;
+      const st=liftSolve(v, Gr, 1, cfg, cfg.eta_drive, re);
+      P("2 Free speed → I→0, F→0", Math.abs(st.I)<0.5 && isFinite(st.F_drive) && Math.abs(st.F_drive)<5,
+        `at v=${fmt(v,2)} m/s: I=${fmt(st.I,3)}A, F=${fmt(st.F_drive,2)}N`);
+    }
+    // 3. Convex baseline: time-vs-G single minimum near G≈5.23
+    {
+      const opt=optimizeSingle(cfg);
+      const raw=opt.curve.filter(c=>c.time!=null).map(c=>c.time);
+      const c=raw.map((_,i)=>{const a=raw[Math.max(0,i-1)],b=raw[i],d=raw[Math.min(raw.length-1,i+1)];return (a+b+d)/3;});
+      let sc=0,prev=0; for(let i=1;i<c.length;i++){const s=Math.sign(c[i]-c[i-1]); if(s!==0&&prev!==0&&s!==prev)sc++; if(s!==0)prev=s;}
+      P("3 Convex baseline (single min)", sc<=1 && Math.abs(opt.G_fixed-5.23)<0.6,
+        `slope sign-changes=${sc} (≤1=convex), best G=${fmt(opt.G_fixed,2)} (exp ≈5.23), t=${fmt(opt.time,3)}s (exp ≈0.593)`);
+    }
+    // 4. Energy balance: residual <2%; dropping iron → ~7%, dropping gearbox → ~11%
+    {
+      const opt=optimizeSingle(cfg);
+      const r=simStroke(cfg,"fixed",opt.G_fixed,false), en=r.energy;
+      const sum=en.batt+en.copper+en.iron+en.friction+en.gearbox+en.useful;
+      const resid=Math.abs(en.p_in-sum)/Math.abs(en.p_in);
+      const residNoIron=Math.abs(en.p_in-(sum-en.iron))/Math.abs(en.p_in);
+      const residNoGear=Math.abs(en.p_in-(sum-en.gearbox))/Math.abs(en.p_in);
+      P("4 Energy balance (with iron+gearbox)", resid<0.02,
+        `∫P_in=${fmt(en.p_in,1)}J, Σlosses=${fmt(sum,1)}J, residual=${fmt(resid*100,3)}% (<2%)`);
+      P("4b Iron term required", residNoIron>0.05, `dropping iron → residual ${fmt(residNoIron*100,1)}% (proves Ke−Kt term)`);
+      P("4c Gearbox term required", residNoGear>0.05, `dropping gearbox → residual ${fmt(residNoGear*100,1)}%`);
+    }
+    // 5. Ordering (η equal): CVT time ≤ single time always
+    {
+      const c=defaultLiftConfig(); c.eta_cvt=c.eta_drive;
+      const opt=optimizeSingle(c);
+      const cvt=simStroke(c,"cvt",null,false);
+      const ok = !opt.unreachable && !cvt.unreachable && cvt.time <= opt.time + 1e-3;
+      P("5 Ordering CVT ≤ Single (η equal)", ok, `CVT ${fmt(cvt.time,3)}s ≤ Single ${fmt(opt.time,3)}s`);
+    }
+    // 6. Brownout / power-limit: R_sys 0.07→0.30 → I_bn 32.9→7.7 A, current capped, no NaN
+    {
+      const c1=defaultLiftConfig(), c2=defaultLiftConfig(); c2.R_sys=0.30;
+      const Ibn1=(c1.V_oc-c1.V_bn)/(c1.N*c1.R_sys), Ibn2=(c2.V_oc-c2.V_bn)/(c2.N*c2.R_sys);
+      const st2=liftSolve(0,5.23,1,c2,c2.eta_drive,re);
+      P("6 Brownout caps current", Math.abs(Ibn1-32.86)<0.5 && Math.abs(Ibn2-7.67)<0.2 && st2.I<=Ibn2+1e-6 && isFinite(st2.F_drive) && !isNaN(st2.F_drive),
+        `I_bn: ${fmt(Ibn1,1)}→${fmt(Ibn2,1)}A (exp 32.9→7.7), capped I=${fmt(st2.I,2)}A, V_bus=${fmt(st2.V_bus,2)}V`);
+    }
+    // 7. Heavy-load feasibility: m_lift=22 kg → single UNREACHABLE, CVT completes ≈5.122 s
+    {
+      const c=defaultLiftConfig(); c.m_carriage=22; c.m_pay=0;
+      const opt=optimizeSingle(c);
+      const cvt=simStroke(c,"cvt",null,false);
+      P("7 Heavy load: single UNREACHABLE, CVT completes", opt.unreachable && !cvt.unreachable && cvt.time<10,
+        `single ${opt.unreachable?"UNREACHABLE":fmt(opt.time,3)+"s"}, CVT ${cvt.unreachable?"UNREACHABLE":fmt(cvt.time,3)+"s"} (exp ≈5.122)`);
+    }
+
+    $("lf-test-out").innerHTML=out.join("\n");
+    console.log("[LIFT tests]\n"+out.join("\n").replace(/<[^>]+>/g,""));
+  }
+
+  /* ====================== Wire up ====================== */
+  function build(){
+    buildConfigUI();
+    $("lf-btn-run").addEventListener("click",doRun);
+    $("lf-btn-sweep").addEventListener("click",doSweep);
+    $("lf-btn-sweep-dl").addEventListener("click",doSweepCsv);
+    $("lf-btn-tests").addEventListener("click",runSelfTests);
+    $("lf-btn-export").addEventListener("click",doExportCopy);
+    $("lf-btn-export-dl").addEventListener("click",doExportDownload);
+    $("lf-btn-defaults").addEventListener("click",()=>{ CFG=defaultLiftConfig(); buildConfigUI(); });
+    $("lf-tr-arch").addEventListener("change",renderTraces);
+  }
+  function ensureFirstRun(){ if(firstRunDone) return; firstRunDone=true; doRun(); }
+
+  if(document.readyState==="loading") document.addEventListener("DOMContentLoaded",build);
+  else build();
+
+  // expose minimal API for the tab shell + console debugging
+  return { ensureFirstRun, runComparison, simStroke, optimizeSingle, optimizeShifter, defaultLiftConfig, runSelfTests };
+})();
 </script>
 </body>
 </html>
