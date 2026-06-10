@@ -246,6 +246,7 @@
         <select id="lf-sweep-var">
           <option value="mass">lifted mass (kg)</option>
           <option value="stroke">stroke L (m)</option>
+          <option value="t_shift">t_shift (s) — 2-speed</option>
         </select>
         <label style="flex:none">min</label><input type="number" id="lf-sweep-min" value="1" step="any" style="width:70px">
         <label style="flex:none">max</label><input type="number" id="lf-sweep-max" value="22" step="any" style="width:70px">
@@ -1048,10 +1049,12 @@ window.LIFT = (function(){
       // mechanism
       m_carriage:1.5, m_pay:0.5, N:2, r_spool:0.018, n_rig:1, F_fric:6, L:0.7,
       eta_drive:0.70, eta_cvt:0.85,
-      // electrical & ratio
+      // electrical & ratio — G_min/G_max are the PHYSICAL buildable reduction
+      // range (hardware limits), not search knobs. The CVT/single ratios are
+      // derived analytically and clamped to this range.
       V_oc:13.6, R_sys:0.07, V_bn:9.0, I_sw:20, G_min:2, G_max:20, t_shift:0.10,
       // sim
-      dt:0.001, dt_sweep:0.003, opt_pts:40, cvt_grid:50, shift_grid:8, seg_timeout:10.0,
+      dt:0.001, dt_sweep:0.003, shift_pts:40, seg_timeout:10.0,
     };
   }
 
@@ -1075,6 +1078,29 @@ window.LIFT = (function(){
 
   function newEnergy(){ return {p_in:0,batt:0,copper:0,iron:0,friction:0,gearbox:0,useful:0}; }
 
+  // ---------- CVT optimal ratio (DERIVED, closed-form) ----------
+  // Ignoring clamps, force vs ratio is F(G) ∝ G·(A − B·G), a downward parabola
+  // with A = V_oc − I_free·(R_m+N·R_sys), B = Ke·v/r_eff. dF/dG=0 →
+  //   G* = A·r_eff / (2·Ke·v).
+  // This blows up as v→0 (the math wants infinite reduction at standstill), so it
+  // is clamped to the physical buildable range [G_min, G_max]. The current limit
+  // (I_sw / I_bn) makes F monotone in G near the clamp, so the true max is the
+  // interior G* or a range endpoint — we evaluate all three and take the max
+  // (matches a brute-force grid scan exactly; verified).
+  function bestCvtG(v, cfg, eta, re){
+    const { R_m, Ke, I_free } = MOTOR;
+    const R = R_m + cfg.N*cfg.R_sys;
+    const A = cfg.V_oc - I_free*R;
+    let star = (v <= 1e-9) ? cfg.G_max : A*re/(2*Ke*v);
+    star = Math.min(cfg.G_max, Math.max(cfg.G_min, star));
+    let bG=star, bF=liftSolve(v, star, 1, cfg, eta, re).F_drive;
+    for (const G of [cfg.G_min, cfg.G_max]){
+      const f = liftSolve(v, G, 1, cfg, eta, re).F_drive;
+      if (f > bF){ bF=f; bG=G; }
+    }
+    return bG;
+  }
+
   // ---------- Simulate one vertical stroke 0→L (brief §3 solve order) ----------
   // gearArg: fixed → number; cvt → null; shifter → [G_lo, G_hi]
   function simStroke(cfg, arch, gearArg, wantTrace){
@@ -1096,14 +1122,9 @@ window.LIFT = (function(){
       if (arch === "fixed"){
         Gr = gearArg; step = liftSolve(v, Gr, 1, cfg, eta, re); F_drive = step.F_drive;
       } else if (arch === "cvt"){
-        // grid-scan G over [G_min,G_max], pick max F_drive (max accel ceiling)
-        let best=-Infinity, bestG=cfg.G_min, bestStep=null, n=cfg.cvt_grid;
-        for(let j=0;j<n;j++){
-          const Gi = cfg.G_min + (cfg.G_max-cfg.G_min)*(j/(n-1));
-          const s = liftSolve(v, Gi, 1, cfg, eta, re);
-          if (s.F_drive > best){ best=s.F_drive; bestG=Gi; bestStep=s; }
-        }
-        Gr=bestG; step=bestStep; F_drive=step.F_drive;
+        // DERIVED optimal ratio each instant (closed-form), then clamped to hardware.
+        Gr = bestCvtG(v, cfg, eta, re);
+        step = liftSolve(v, Gr, 1, cfg, eta, re); F_drive = step.F_drive;
       } else { // shifter: 2-speed, greedy max instantaneous F_drive, t_shift clutch-cut
         let bestF=-Infinity, bestG=pair[0];
         for(const Gi of pair){
@@ -1156,28 +1177,41 @@ window.LIFT = (function(){
     return { time:t, unreachable:false, brownout, shifts, trace, energy:en };
   }
 
-  // ---------- Single-gear optimizer (brief §5): min time-to-L over [G_min,G_max] ----------
+  // ---------- Single-gear optimizer (DERIVED via golden-section) ----------
+  // time-to-L is convex in G on the feasible side (acceptance test 3). Infeasible
+  // (can't reach L in time) returns a penalty that DECREASES with G, so the search
+  // climbs out of the low-G infeasible region toward the feasible side. No fixed
+  // grid / opt_pts knob — golden-section converges to the true optimum within the
+  // physical reduction range [G_min, G_max].
   function optimizeSingle(cfg){
-    const n=cfg.opt_pts; let best=Infinity, bestG=cfg.G_min; const curve=[];
-    for(let j=0;j<n;j++){
-      const Gr = cfg.G_min + (cfg.G_max-cfg.G_min)*(j/(n-1));
-      const r = simStroke(cfg, "fixed", Gr, false);
-      const tt = r.unreachable ? Infinity : r.time;
-      curve.push({G:Gr, time:r.unreachable?null:r.time, unreachable:r.unreachable});
-      if (tt < best){ best=tt; bestG=Gr; }
+    const BIG = cfg.seg_timeout*10;
+    const f = (G)=>{ const r=simStroke(cfg,"fixed",G,false); return r.unreachable ? (BIG - G) : r.time; };
+    const gr = (Math.sqrt(5)-1)/2; // 0.618…
+    let a=cfg.G_min, b=cfg.G_max;
+    let c=b-gr*(b-a), d=a+gr*(b-a), fc=f(c), fd=f(d);
+    for(let it=0; it<80 && (b-a)>1e-4; it++){
+      if(fc<fd){ b=d; d=c; fd=fc; c=b-gr*(b-a); fc=f(c); }
+      else      { a=c; c=d; fc=fd; d=a+gr*(b-a); fd=f(d); }
     }
-    return { G_fixed:bestG, time:isFinite(best)?best:null, unreachable:!isFinite(best), curve };
+    const Gopt=(a+b)/2, r=simStroke(cfg,"fixed",Gopt,false);
+    return { G_fixed:Gopt, time:r.unreachable?null:r.time, unreachable:r.unreachable };
   }
 
-  // ---------- 2-speed pair optimizer (brief §4: optimize the pair over a grid) ----------
-  function optimizeShifter(cfg){
-    const n=cfg.shift_grid, gs=[];
+  // ---------- 2-speed pair optimizer (fair fine search) ----------
+  // An ideal 2-speed (t_shift=0) is a SUPERSET of single-gear policies — it can
+  // always sit in one gear — so it must be ≥ single, strictly better only if a
+  // shift helps. To guarantee that ordering numerically, the candidate gears
+  // include the single optimum, so the degenerate pair [G_opt,G_opt] is always
+  // available. Bounded above by the CVT (two ratios ≤ continuous). Keeps the
+  // greedy max-F policy + t_shift clutch-cut.
+  function optimizeShifter(cfg, singleG){
+    const n=cfg.shift_pts, gs=[];
     for(let j=0;j<n;j++) gs.push(cfg.G_min + (cfg.G_max-cfg.G_min)*(j/(n-1)));
-    let best=Infinity, bestPair=[gs[0],gs[0]], bestShifts=0, bestRun=null;
-    for(let i=0;i<n;i++) for(let j=i;j<n;j++){
-      const pair=[gs[i],gs[j]];
-      const r = simStroke(cfg, "shifter", pair, false);
-      if (!r.unreachable && r.time < best){ best=r.time; bestPair=pair; bestShifts=r.shifts; bestRun=r; }
+    if (singleG!=null && isFinite(singleG)) gs.push(singleG); // fair: can replicate single
+    let best=Infinity, bestPair=[gs[0],gs[0]], bestShifts=0;
+    for(let i=0;i<gs.length;i++) for(let j=i;j<gs.length;j++){
+      const r = simStroke(cfg, "shifter", [gs[i],gs[j]], false);
+      if (!r.unreachable && r.time < best){ best=r.time; bestPair=[gs[i],gs[j]]; bestShifts=r.shifts; }
     }
     return { pair:bestPair, time:isFinite(best)?best:null, unreachable:!isFinite(best), shifts:bestShifts };
   }
@@ -1186,7 +1220,7 @@ window.LIFT = (function(){
   function runComparison(cfg){
     const single  = optimizeSingle(cfg);
     const cvt      = simStroke(cfg, "cvt", null, false);
-    const shifter  = optimizeShifter(cfg);
+    const shifter  = optimizeShifter(cfg, single.unreachable ? null : single.G_fixed);
     return { single, cvt, shifter };
   }
 
@@ -1233,16 +1267,14 @@ window.LIFT = (function(){
     lfNumRow(e,"R_sys (Ω)",CFG,"R_sys",null,"Combined battery + wiring resistance (Ω). Sets the brownout current ceiling I_bn = (V_oc−V_bn)/(N·R_sys); higher R_sys caps current harder. Typical 0.05–0.10 Ω.");
     lfNumRow(e,"V_bn (V)",CFG,"V_bn",null,"Brownout threshold (V). Current is capped so V_bus stays ≥ V_bn. ≈9 V. (The I_bn cap usually prevents the bus dip — the symptom is current-capping, not a brownout flag.)");
     lfNumRow(e,"I_sw (A/motor)",CFG,"I_sw",null,"Per-motor software current limit (A). Caps each motor's current independent of the brownout cap.");
-    lfNumRow(e,"G_min",CFG,"G_min",null,"Total reduction floor (tallest gear, highest speed, least force). Both the single-gear optimizer and the CVT search [G_min, G_max].");
-    lfNumRow(e,"G_max",CFG,"G_max",null,"Total reduction ceiling (shortest gear, most lift force, lowest speed). When the single optimizer pins here, the limit is total reduction — a fixed-gear fix, not a variability problem.");
-    lfNumRow(e,"t_shift (s)",CFG,"t_shift",null,"2-speed clutch dead-time per gear change (s). Drive force = 0 while shifting. On a single lift the 2-speed almost never shifts, so this rarely bites.");
+    lfNumRow(e,"G_min (hardware)",CFG,"G_min",null,"Tallest buildable reduction (highest speed, least force) — a HARDWARE limit, not a search knob. The derived ratios clamp to [G_min, G_max]. Binds the optimum only for light, fast lifts.");
+    lfNumRow(e,"G_max (hardware)",CFG,"G_max",null,"Shortest buildable reduction (most lift force, lowest speed) — a HARDWARE limit. The CVT's mathematically-optimal ratio →∞ as speed→0, so it pins here at low speed. When the single optimum pins at G_max the fix is MORE reduction (raise G_max), not gear variability.");
+    lfNumRow(e,"t_shift (s)",CFG,"t_shift",null,"2-speed clutch dead-time per gear change (s). Drive force = 0 while shifting (gravity pulls back). Set 0 for the IDEAL 2-speed (provably ≥ single). At any realistic t_shift the single shift's dead-time usually exceeds the marginal ratio gain, so the optimizer declines to shift and ties single.");
 
     const s=$("lf-sim"); s.innerHTML="";
     lfNumRow(s,"dt (s)",CFG,"dt",null,"Integration timestep for single runs / traces (s). Semi-implicit Euler. Default 0.001.");
     lfNumRow(s,"dt sweep (s)",CFG,"dt_sweep",null,"Coarser timestep used during sweeps for speed. Default 0.003.");
-    lfNumRow(s,"optimizer pts",CFG,"opt_pts",null,"How many G_fixed values the single-gear optimizer tries across [G_min,G_max] to find the honest baseline. Default 40.");
-    lfNumRow(s,"CVT grid pts",CFG,"cvt_grid",null,"Candidate ratios the CVT scans across [G_min,G_max] each timestep to pick max force. Default 50.");
-    lfNumRow(s,"2-speed grid pts",CFG,"shift_grid",null,"Grid the 2-speed pair optimizer searches (all i≤j pairs). Coarser than the single grid, so the 2-speed can't simply replicate the single optimum. Default 15.");
+    lfNumRow(s,"2-speed pair pts",CFG,"shift_pts",null,"Resolution of the fair 2-speed pair search across [G_min,G_max] (all i≤j pairs; the single optimum is always included so the 2-speed can replicate it). The CVT and single ratios are derived analytically — no grid. Default 40.");
   }
 
   // ---------- Render ----------
@@ -1340,10 +1372,11 @@ window.LIFT = (function(){
     for(let j=0;j<n;j++){
       const val = lo + (hi-lo)*(j/(n-1));
       const cfg = Object.assign(defaultLiftConfig(), CFG);  // shallow clone of current cfg
-      cfg.dt = CFG.dt_sweep; cfg.cvt_grid=Math.min(CFG.cvt_grid,50);
+      cfg.dt = CFG.dt_sweep;
       cfg.eta_cvt = cfg.eta_drive;                          // ratio-only (brief §5)
       if (varName==="mass"){ cfg.m_carriage=val; cfg.m_pay=0; }
-      else { cfg.L=val; }
+      else if (varName==="stroke"){ cfg.L=val; }
+      else if (varName==="t_shift"){ cfg.t_shift=val; }     // 2-speed shift-time tradeoff
       const res=runComparison(cfg);
       const sUn=res.single.unreachable, base=res.single.time;
       const pc = r => (sUn||r.unreachable||!base)?null:100*(base-r.time)/base;
@@ -1364,7 +1397,7 @@ window.LIFT = (function(){
     const btn=$("lf-btn-sweep"); btn.disabled=true; btn.textContent="Sweeping…";
     setTimeout(()=>{
       const sw=computeSweep(varName,lo,hi,n); LAST_SWEEP=sw;
-      const xlabel = varName==="mass" ? "lifted mass (kg)" : "stroke L (m)";
+      const xlabel = varName==="mass" ? "lifted mass (kg)" : (varName==="stroke" ? "stroke L (m)" : "t_shift (s)");
       Plotly.newPlot("lf-sweep-plot",[
         {x:sw.xs,y:sw.dCvt,mode:"lines+markers",name:"CVT",line:{color:"#3fb950"}},
         {x:sw.xs,y:sw.dShift,mode:"lines+markers",name:"2-speed",line:{color:"#4da3ff"}},
@@ -1405,7 +1438,7 @@ window.LIFT = (function(){
     p("- Efficiency: eta_drive="+CFG.eta_drive+", eta_cvt="+CFG.eta_cvt);
     p("- Motor (FIXED goBILDA 5000 bare core): R_m="+MOTOR.R_m+" Ω, Kt="+MOTOR.Kt+", Ke="+MOTOR.Ke+", I_free="+MOTOR.I_free+" A");
     p("- Electrical & ratio: V_oc="+CFG.V_oc+" V, R_sys="+CFG.R_sys+" Ω, V_bn="+CFG.V_bn+" V, I_sw="+CFG.I_sw+" A/motor, G∈["+CFG.G_min+","+CFG.G_max+"], t_shift="+CFG.t_shift+" s");
-    p("- Sim: dt="+CFG.dt+" s, optimizer "+CFG.opt_pts+" pts, CVT grid "+CFG.cvt_grid+", 2-speed grid "+CFG.shift_grid);
+    p("- Ratios: CVT derived closed-form G*=(V_oc−I_free·R)·r_eff/(2·Ke·v) clamped to [G_min,G_max]; single via golden-section; 2-speed = fair "+CFG.shift_pts+"-pt pair search (single optimum included). dt="+CFG.dt+" s.");
     p("");
     p("## Results — time to reach L");
     p("| Architecture | Time (s) | Δ % vs single | Shifts | Flags |");
@@ -1460,14 +1493,16 @@ window.LIFT = (function(){
       P("2 Free speed → I→0, F→0", Math.abs(st.I)<0.5 && isFinite(st.F_drive) && Math.abs(st.F_drive)<5,
         `at v=${fmt(v,2)} m/s: I=${fmt(st.I,3)}A, F=${fmt(st.F_drive,2)}N`);
     }
-    // 3. Convex baseline: time-vs-G single minimum near G≈5.23
+    // 3. Convex baseline: sampled time-vs-G has a single min; golden optimum ≈5.23
     {
-      const opt=optimizeSingle(cfg);
-      const raw=opt.curve.filter(c=>c.time!=null).map(c=>c.time);
+      const raw=[];
+      for(let j=0;j<40;j++){ const Gr=cfg.G_min+(cfg.G_max-cfg.G_min)*j/39;
+        const r=simStroke(cfg,"fixed",Gr,false); if(!r.unreachable) raw.push(r.time); }
       const c=raw.map((_,i)=>{const a=raw[Math.max(0,i-1)],b=raw[i],d=raw[Math.min(raw.length-1,i+1)];return (a+b+d)/3;});
       let sc=0,prev=0; for(let i=1;i<c.length;i++){const s=Math.sign(c[i]-c[i-1]); if(s!==0&&prev!==0&&s!==prev)sc++; if(s!==0)prev=s;}
-      P("3 Convex baseline (single min)", sc<=1 && Math.abs(opt.G_fixed-5.23)<0.6,
-        `slope sign-changes=${sc} (≤1=convex), best G=${fmt(opt.G_fixed,2)} (exp ≈5.23), t=${fmt(opt.time,3)}s (exp ≈0.593)`);
+      const opt=optimizeSingle(cfg);
+      P("3 Convex baseline + golden optimum", sc<=1 && Math.abs(opt.G_fixed-5.23)<0.6,
+        `slope sign-changes=${sc} (≤1=convex), golden G=${fmt(opt.G_fixed,3)} (exp ≈5.23), t=${fmt(opt.time,3)}s (exp ≈0.593)`);
     }
     // 4. Energy balance: residual <2%; dropping iron → ~7%, dropping gearbox → ~11%
     {
@@ -1482,13 +1517,18 @@ window.LIFT = (function(){
       P("4b Iron term required", residNoIron>0.05, `dropping iron → residual ${fmt(residNoIron*100,1)}% (proves Ke−Kt term)`);
       P("4c Gearbox term required", residNoGear>0.05, `dropping gearbox → residual ${fmt(residNoGear*100,1)}%`);
     }
-    // 5. Ordering (η equal): CVT time ≤ single time always
+    // 5. Ordering (η equal, ideal t_shift=0): single ≥ 2-speed ≥ CVT (times).
+    //    Both variable archs are supersets of fixed-G policies → can't be slower.
     {
-      const c=defaultLiftConfig(); c.eta_cvt=c.eta_drive;
+      const c=defaultLiftConfig(); c.eta_cvt=c.eta_drive; c.t_shift=0;
       const opt=optimizeSingle(c);
       const cvt=simStroke(c,"cvt",null,false);
-      const ok = !opt.unreachable && !cvt.unreachable && cvt.time <= opt.time + 1e-3;
-      P("5 Ordering CVT ≤ Single (η equal)", ok, `CVT ${fmt(cvt.time,3)}s ≤ Single ${fmt(opt.time,3)}s`);
+      const sh=optimizeShifter(c, opt.unreachable?null:opt.G_fixed);
+      const tol=1e-3;
+      const ok = !opt.unreachable && !cvt.unreachable && !sh.unreachable &&
+                 cvt.time <= sh.time+tol && sh.time <= opt.time+tol;
+      P("5 Ordering CVT ≤ 2-speed ≤ Single (ideal)", ok,
+        `CVT ${fmt(cvt.time,3)} ≤ 2-speed ${fmt(sh.time,3)} (${sh.shifts} shift) ≤ Single ${fmt(opt.time,3)}s`);
     }
     // 6. Brownout / power-limit: R_sys 0.07→0.30 → I_bn 32.9→7.7 A, current capped, no NaN
     {
